@@ -1,0 +1,67 @@
+
+# Milestone 1 Project Proposal
+## GPU-Accelerated Quantum Simulation: TEBD for the 1D Transverse-Field Ising Model
+
+
+**Team members:** Xin Wei, Chiling Han, Hercy Shen
+**Course:** CME 213: Parallel Computing with CUDA, MPI and OpenMP
+
+### **1. Project Focus**
+
+We propose to build a GPU-accelerated quantum many-body simulator for the one-dimensional transverse-field Ising model (TFIM) using tensor network methods, with a focus on the Time-Evolving Block Decimation (TEBD) algorithm. This project lies in computational physics and scientific simulation.
+
+The physical problem is the real-time evolution of a 1D spin chain after a quantum quench. A chain of $L$ spin-$\frac{1}{2}$ sites has Hilbert-space dimension $2^L$, so exact state-vector simulation becomes prohibitively expensive as $L$ grows. Matrix Product States (MPS) provide a compressed representation of low-entanglement states and are therefore a natural tool for 1D quantum systems. However, TEBD remains computationally expensive because each time step requires repeated two-site tensor contractions, reshapes, and singular value decompositions (SVDs). As entanglement grows, the bond dimension increases, which raises both runtime and memory cost.
+
+Parallelism is important because the dominant operations are structured dense/small-batched linear algebra kernels that map well to GPUs. And these operations are repeated many times during time evolution, making acceleration important for end-to-end runtime.
+
+Scientifically, we aim to simulate quench dynamics in the TFIM and measure observables such as magnetization, two-point correlations, and bipartite entanglement entropy. Computationally, we aim to study how GPU acceleration and multi-GPU parallelism affect the performance of TEBD, and how cost scales with system size, bond dimension, and evolution time.
+
+### **2. Core Algorithms**
+
+Our main algorithmic components are:
+
+* **Matrix Product State (MPS) representation.** The many-body wavefunction is stored as an MPS, compressing the full $2^L$-dimensional state into a sequence of local tensors connected by bond indices. This is computed from the exact state by applying a sequence of SVDs.
+* **Time-Evolving Block Decimation (TEBD).** We use second-order Suzuki--Trotter decomposition to approximate the real-time evolution operator $e^{-iHt}$ as a sequence of nearest-neighbor two-site gates. The Hamiltonian is split into even-bond and odd-bond terms.
+* **Two-site update.** Each TEBD update consists of:
+  1. contracting two neighboring MPS tensors with a two-site gate,
+  2. reshaping the result into a matrix, performing an SVD,
+  3. truncating to a maximum bond dimension $\chi$,
+  4. restoring the result to MPS form.
+* **Observable evaluation.** We plan to compute:
+  * site-resolved and average magnetization,
+  * two-point spin correlation functions,
+  * bipartite entanglement entropy,
+  * truncation error and bond-dimension growth over time.
+
+These observables connect the physics to the computational complexity. In particular, entanglement growth directly affects the bond dimension needed for accurate MPS simulation.
+
+For validation, we plan to compare small-system results, with no more than 20 spin-$\frac{1}{2}$ sites, against exact state-vector simulation or exact diagonalization where feasible.
+
+### **3. Parallel Computing Approach**
+
+**CUDA.** We will implement at least one computationally intensive part of TEBD in CUDA. Likely targets include: two-site tensor contraction; tensor reshaping/permutation; custom kernels for applying local gates; optimized data movement for forming SVD input matrices.
+
+We will pay attention to coalesced memory access, memory layout, thread/block mapping, and minimizing global memory traffic. We may use cuBLAS/cuSOLVER for parts of the linear algebra stack, but the project will include at least one custom CUDA kernel for a core TEBD operation.
+
+**MPI.** We will use MPI to run across multiple GPUs. Our plan is to distribute independent simulations across MPI ranks, for example over different system sizes, field strengths, bond dimensions, or quench protocols.
+
+### **4. Planned Deliverables**
+
+By the end of the quarter, we aim to produce:
+* a working TEBD simulator for the 1D TFIM using MPS.
+* a CUDA-accelerated implementation of the main TEBD bottleneck,
+* benchmark results versus system size $L$, bond dimension $\chi$.
+* identifying whether performance is compute-bound, memory-bound, or communication-bound.
+* a physics demonstration showing magnetization, correlations, and entanglement entropy during TFIM quench dynamics.
+
+### **5. Timeline and Risks**
+
+**Milestone 1 (Proposal).** Finalize project scope, baseline model, and target observables.
+
+**Milestone 2 (Design).** Implement a Python, then C++, CPU reference version of TEBD for the 1D TFIM. Validate against small-system exact results.  Risk: SVD may dominate runtime and limit speedup.
+
+**Milestone 3 (GPU Kernels).** Implement and test CUDA kernels for the main TEBD bottleneck. Profile kernel execution and memory behavior. Compare CPU and GPU performance.
+
+**Milestone 4 (Distributed).** Add MPI support for multi-GPU execution. Benchmark strong and/or weak scaling. Measure communication overhead and identify scaling limits. Risk: TEBD has sequential structure along the chain, so multi-GPU speedup may be modest.
+
+**Final report.** Integrate performance results, physics outputs, and scaling analysis into a final evaluation of GPU-accelerated TEBD.
