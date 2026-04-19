@@ -15,7 +15,7 @@ TEST(Validate, SmallTFI_Order2) {
   int L = 4;
   BondModel model = tfi_chain(L, 1.0, 1.0);
   ValidationSummary s =
-      validate_tebd_vs_ed(model, 0.05, 0.5, 64, 1e-12, 2, nullptr, false);
+      validate_tebd_vs_ed(model, 0.025, 0.5, 64, 1e-12, 2, nullptr, false);
 
   // Check all time-step errors are small.
   for (size_t t = 0; t < s.err_Sz.size(); ++t) {

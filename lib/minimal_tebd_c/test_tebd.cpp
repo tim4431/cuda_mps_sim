@@ -83,8 +83,9 @@ TEST(TEBD, BondDimGrows) {
 }
 
 TEST(TEBD, TrotterOrders) {
-  // Higher-order Trotter should give smaller errors at fixed dt.
-  // Evolve small system and compare final state to ED-like reference.
+  // Higher-order Trotter should give smaller state-vector error.
+  // Compare TEBD state vectors to each other: order 2 and 4 should be
+  // closer than order 1 and 4.
   int L = 4;
   std::vector<int> init(L, 0);
   double dt = 0.1;
@@ -108,17 +109,21 @@ TEST(TEBD, TrotterOrders) {
   TEBDEngine eng4(&psi4, &m4, dt, 4, steps, 20, 1e-12);
   eng4.run();
 
-  // Compare Sz at site 0 between orders.
-  // Order 4 and order 2 should be closer to each other than order 1 is to either.
-  std::vector<double> Sz1(L), Sz2(L), Sz4(L);
-  psi1.expect(PAULI_Z, Sz1.data());
-  psi2.expect(PAULI_Z, Sz2.data());
-  psi4.expect(PAULI_Z, Sz4.data());
+  // Compare full state vectors: |1 - |<psi_i|psi_4>||
+  Tensor sv1 = psi1.to_state_vector();
+  Tensor sv2 = psi2.to_state_vector();
+  Tensor sv4 = psi4.to_state_vector();
+  int dim = sv4.size;
 
-  double diff_12 = std::abs(Sz1[0] - Sz2[0]);
-  double diff_24 = std::abs(Sz2[0] - Sz4[0]);
-  // Order 2 and 4 should agree better than order 1 and 2.
-  EXPECT_LT(diff_24, diff_12);
+  Cdouble o14 = 0, o24 = 0;
+  for (int i = 0; i < dim; ++i) {
+    o14 += std::conj(sv1(i)) * sv4(i);
+    o24 += std::conj(sv2(i)) * sv4(i);
+  }
+  double infid_14 = 1.0 - std::abs(o14);
+  double infid_24 = 1.0 - std::abs(o24);
+  // Order 2 should be closer to order 4 than order 1 is.
+  EXPECT_LT(infid_24, infid_14);
 }
 
 TEST(TEBD, SvdTruncateBasic) {

@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(conda run *)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(make run_tests -C /home/tim/cuda_mps_sim/lib/minimal_tebd_c)",
+      "Bash(make -C /home/tim/cuda_mps_sim/lib/minimal_tebd_c tebd_sim)",
+      "Bash(./tebd_sim)"
     ]
   }
 }

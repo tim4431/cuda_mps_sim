@@ -101,15 +101,15 @@ void svd_truncate(const Tensor& theta, int chi_max, double svd_min, Tensor& A,
     std::vector<Cdouble> U_t(n * mn);
     std::vector<Cdouble> Vt_t(mn * m);
     svd(At.data(), n, m, m, U_t.data(), s_full.data(), Vt_t.data());
-    // U = conj(Vt_t)^T, Vt = conj(U_t)^T
+    // A^T = U_t S Vt_t, so A = Vt_t^T S U_t^T => U = Vt_t^T, Vt = U_t^T.
     U_full.resize(m * mn);
     Vt_full.resize(mn * n);
     for (int i = 0; i < m; ++i)
       for (int j = 0; j < mn; ++j)
-        U_full[i * mn + j] = std::conj(Vt_t[j * m + i]);
+        U_full[i * mn + j] = Vt_t[j * m + i];
     for (int i = 0; i < mn; ++i)
       for (int j = 0; j < n; ++j)
-        Vt_full[i * n + j] = std::conj(U_t[j * mn + i]);
+        Vt_full[i * n + j] = U_t[j * mn + i];
   }
 
   // Determine how many to keep.

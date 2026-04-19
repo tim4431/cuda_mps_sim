@@ -371,18 +371,18 @@ void MPS::corr(const Cdouble* op_A, const Cdouble* op_B, double out[]) const {
 
 Tensor MPS::to_state_vector() const {
   // Build diag(Ss[0]) @ Bs[0] @ Bs[1] @ ... @ Bs[L-1] and flatten.
-  Tensor psi = theta1(0);  // (chi_L=1, d, chi_R)
-  for (int i = 1; i < L; ++i) {
-    // Contract psi(..., chi) with Bs[i](chi, d, chi')
-    // psi has ndim = 2 + i legs: (1, d, d, ..., d, chi)
-    int old_ndim = psi.ndim;
-    int chi_mid = psi.shape[old_ndim - 1];
-    int chi_R = Bs[i].shape[2];
+  // psi is stored as 2D: (front, chi) where front = d^(sites contracted so far).
+  Tensor t1 = theta1(0);  // (chi_L=1, d, chi_R)
+  int chi_R0 = t1.shape[2];
+  // Reshape to (d, chi_R).
+  int sh_init[2] = {d, chi_R0};
+  t1.reshape(2, sh_init);
+  Tensor psi = std::move(t1);
 
-    // Flatten psi to 2D: (front, chi_mid)
-    int front = psi.size / chi_mid;
-    int sh2_a[2] = {front, chi_mid};
-    psi.reshape(2, sh2_a);
+  for (int i = 1; i < L; ++i) {
+    int chi_mid = psi.shape[1];  // right bond dim = chi_R of previous site
+    int chi_R = Bs[i].shape[2];
+    int front = psi.shape[0];    // d^i (accumulated physical dimensions)
 
     // Flatten Bs[i] to 2D: (chi_mid, d * chi_R)
     int sh2_b[2] = {chi_mid, d * chi_R};
@@ -392,17 +392,20 @@ Tensor MPS::to_state_vector() const {
         for (int b = 0; b < chi_R; ++b)
           Bi_flat(a, p * chi_R + b) = Bs[i](a, p, b);
 
-    // GEMM
-    int sh_out[2] = {front, d * chi_R};
+    // GEMM: (front, chi_mid) @ (chi_mid, d*chi_R) = (front, d*chi_R)
+    int sh_out[2] = {front * d, chi_R};
     Tensor new_psi(2, sh_out);
+    // The GEMM output is (front, d*chi_R), which we interpret as (front*d, chi_R).
     zgemm(psi.data, chi_mid, Bi_flat.data, d * chi_R, new_psi.data,
           d * chi_R, front, d * chi_R, chi_mid);
+    // Reshape the flat buffer: (front, d*chi_R) = (front*d, chi_R).
+    // Data layout is the same since it's row-major. new_psi already has the right shape.
     psi = std::move(new_psi);
   }
 
-  // Flatten to 1D vector of length d^L.
-  int total = 1;
-  for (int i = 0; i < L; ++i) total *= d;
+  // At this point, psi has shape (d^L, 1) since the rightmost chi_R = 1.
+  // Reshape to 1D.
+  int total = psi.size;
   int sh1[1] = {total};
   psi.reshape(1, sh1);
   return psi;
