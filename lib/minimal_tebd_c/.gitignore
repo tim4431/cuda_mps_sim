@@ -1,0 +1,11 @@
+# Compiled executables
+tebd_sim
+test_tensor
+test_linalg
+test_mps
+test_model
+test_tebd
+test_validate
+
+# Static libraries
+gtest_main.a
