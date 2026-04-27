@@ -26,6 +26,9 @@ default: $(TARGET)
 $(TARGET): $(LIB_OBJS) main.o
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
+validate_driver: $(LIB_OBJS) validate_driver.o
+	$(CXX) $(CXXFLAGS) $^ -o $@
+
 # ---------------------------------------------------------------------------
 # Google Test library
 # ---------------------------------------------------------------------------
@@ -90,6 +93,6 @@ run_tests: tests
 # ---------------------------------------------------------------------------
 
 clean:
-	rm -f *.o $(TARGET) test_tensor test_linalg test_mps test_model test_tebd test_validate gtest_main.a
+	rm -f *.o $(TARGET) validate_driver test_tensor test_linalg test_mps test_model test_tebd test_validate gtest_main.a
 
 .PHONY: default tests run_tests clean

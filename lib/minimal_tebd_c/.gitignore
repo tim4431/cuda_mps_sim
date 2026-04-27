@@ -1,5 +1,6 @@
 # Compiled executables
 tebd_sim
+validate_driver
 test_tensor
 test_linalg
 test_mps
