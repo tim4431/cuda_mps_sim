@@ -42,11 +42,26 @@ struct GpuTebdWorkspace {
   GpuTebdWorkspace& operator=(const GpuTebdWorkspace&) = delete;
 };
 
+// Per-stage timing accumulator (milliseconds).  When passed to
+// update_bond_gpu, the function uses CUDA events to record the wall time
+// of each sub-stage on the GPU stream and adds it to the corresponding
+// field.  Pass nullptr to disable timing.
+struct GpuBondTimings {
+  double h2d_ms = 0;
+  double gate_kernel_ms = 0;
+  double row_to_col_ms = 0;
+  double svd_ms = 0;
+  double restore_ms = 0;
+  double d2h_ms = 0;
+  int n_calls = 0;
+};
+
 // GPU version of update_bond.  Uses a custom CUDA kernel for the two-site
 // gate contraction, cuSOLVER (Jacobi SVD) for the SVD, and a custom kernel
 // for the Vidal-form restore.  Reads/writes the host MPS in place.
 double update_bond_gpu(MPS* psi, int site, const Tensor& gate, int chi_max,
-                       double svd_min, GpuTebdWorkspace& ws);
+                       double svd_min, GpuTebdWorkspace& ws,
+                       GpuBondTimings* timings = nullptr);
 
 // One TEBD step using update_bond_gpu in place of update_bond.  Mirrors
 // TEBDEngine::step() but routes every bond update through the GPU.

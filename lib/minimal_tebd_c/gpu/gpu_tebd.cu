@@ -283,12 +283,40 @@ GpuTebdWorkspace::~GpuTebdWorkspace() {
   if (h_S_pinned) cudaFreeHost(h_S_pinned);
 }
 
+// Tiny RAII wrapper that records start/stop events bracketing a region and
+// adds the elapsed-time delta into the given accumulator field on destruct.
+namespace {
+struct EventTimer {
+  cudaEvent_t start{}, stop{};
+  double* dst;
+  EventTimer(double* dst_) : dst(dst_) {
+    if (!dst) return;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
+  }
+  ~EventTimer() {
+    if (!dst) return;
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float ms = 0.f;
+    cudaEventElapsedTime(&ms, start, stop);
+    *dst += double(ms);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+  }
+};
+}  // namespace
+
 double update_bond_gpu(MPS* psi, int site, const Tensor& gate, int chi_max,
-                       double svd_min, GpuTebdWorkspace& ws) {
+                       double svd_min, GpuTebdWorkspace& ws,
+                       GpuBondTimings* timings) {
   assert(psi->d == ws.d);
   auto* h = reinterpret_cast<GpuHandles*>(ws.handle);
   const int d = ws.d;
   const int D2 = d * d;
+  if (timings) timings->n_calls += 1;
+
   Tensor theta = psi->theta2(site);
   int chivL = theta.shape[0];
   int chivR = theta.shape[3];
@@ -309,6 +337,7 @@ double update_bond_gpu(MPS* psi, int site, const Tensor& gate, int chi_max,
               theta_elems * sizeof(cuDoubleComplex));
 
   {
+    EventTimer t(timings ? &timings->h2d_ms : nullptr);
     CUDA_CHECK(cudaMemcpyAsync(ws.d_theta, ws.h_theta_pinned,
                                theta_elems * sizeof(cuDoubleComplex),
                                cudaMemcpyHostToDevice));
@@ -319,6 +348,7 @@ double update_bond_gpu(MPS* psi, int site, const Tensor& gate, int chi_max,
 
   // Step 2: gate contraction.
   {
+    EventTimer t(timings ? &timings->gate_kernel_ms : nullptr);
     int blkx = std::min(32, chivR > 0 ? chivR : 1);
     int blky = D2;
     dim3 block(blkx, blky);
@@ -339,6 +369,7 @@ double update_bond_gpu(MPS* psi, int site, const Tensor& gate, int chi_max,
 
   // Step 3: row-major utheta -> col-major A.  Reuse d_theta as A_col.
   {
+    EventTimer t(timings ? &timings->row_to_col_ms : nullptr);
     dim3 block(32, 8);
     dim3 grid((n + block.x - 1) / block.x, (m + block.y - 1) / block.y);
     row_to_col_kernel<<<grid, block>>>(
@@ -368,6 +399,7 @@ double update_bond_gpu(MPS* psi, int site, const Tensor& gate, int chi_max,
     }
   }
   {
+    EventTimer t(timings ? &timings->svd_ms : nullptr);
     CUSOLVER_CHECK(cusolverDnZgesvdj(
         h->cusolver, CUSOLVER_EIG_MODE_VECTOR, /*econ=*/1,
         /*m=*/m, /*n=*/n, reinterpret_cast<cuDoubleComplex*>(ws.d_theta),
@@ -419,6 +451,7 @@ double update_bond_gpu(MPS* psi, int site, const Tensor& gate, int chi_max,
 
   // Step 6 and 7: Vidal restore.
   {
+    EventTimer t(timings ? &timings->restore_ms : nullptr);
     {
       int blkx = std::min(64, keep > 0 ? keep : 1);
       dim3 block(blkx, d, 1);
@@ -444,6 +477,7 @@ double update_bond_gpu(MPS* psi, int site, const Tensor& gate, int chi_max,
   size_t Bj_bytes =
       size_t(keep) * d * size_t(chivR) * sizeof(cuDoubleComplex);
   {
+    EventTimer t(timings ? &timings->d2h_ms : nullptr);
     CUDA_CHECK(cudaMemcpyAsync(ws.h_outA_pinned, ws.d_newBi, Bi_bytes,
                                cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaMemcpyAsync(ws.h_outB_pinned, ws.d_newBj, Bj_bytes,
