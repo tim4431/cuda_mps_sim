@@ -2,7 +2,9 @@
 
 C++14 implementation of TEBD (Time-Evolving Block Decimation) for the 1D
 transverse-field Ising model. All linear algebra is hand-written -- no
-LAPACK/OpenBLAS -- designed for direct CUDA porting.
+LAPACK/OpenBLAS -- designed for direct CUDA porting. M3 adds a CUDA
+backend in `gpu/` that uses cuSOLVER's Jacobi SVD plus four custom
+kernels.
 
 ## Directory layout
 
@@ -10,16 +12,18 @@ LAPACK/OpenBLAS -- designed for direct CUDA porting.
 minimal_tebd_c/
 ├── core/        # CPU library: tensor, linalg, mps, model, tebd,
 │                # exact_diag, validate
-├── apps/        # driver binaries (currently just sim)
+├── gpu/         # CUDA backend: gpu_tebd.{h,cu}
+├── apps/        # driver binaries (sim + validate_gpu + bench_*)
 ├── tests/       # Google Test binaries (test_*.cpp)
+├── scripts/     # plotting / analysis (plot_*.py)
 ├── third_party/googletest/
-├── Makefile     # one Makefile builds all targets
+├── Makefile     # one Makefile builds all targets; CUDA auto-detected
 └── ARCHITECTURE.md
 ```
 
-The Makefile uses `-Icore`, so source files include headers by plain
-name (`#include "tensor.h"`) regardless of which subdirectory they
-live in.
+The Makefile uses `-Icore -Igpu`, so source files include headers by
+plain name (`#include "tensor.h"`, `#include "gpu_tebd.h"`) regardless of
+which subdirectory they live in.
 
 ## Module dependency graph
 
@@ -34,6 +38,10 @@ core/model      core/linalg ------------+
 
 core/exact_diag  (validation only)
 core/validate    (validation only)
+
+gpu/gpu_tebd.cu --(uses)--> core/{mps,tebd,linalg,tensor}.h
+                  +
+                  cuBLAS + cuSOLVER (Jacobi SVD)
 ```
 
 ## Modules
@@ -129,14 +137,18 @@ Automated TEBD vs exact-diag comparison.
 ## Build
 
 ```
-make              # builds apps/sim (L=30 quench driver)
-make tests        # builds the 6 Google Test binaries in tests/
-make run_tests    # builds and runs the test suite
+make              # builds apps/sim (CPU) + apps/{validate_gpu,bench_*} if nvcc is present
+make tests       # builds the 6 Google Test binaries in tests/
+make run_tests   # builds and runs the test suite
+make bench       # builds only the CUDA benchmark/validation apps
 make clean
 ```
 
-Compiler: any C++14 compiler (`g++`). No external libraries except
-Google Test (vendored in `third_party/googletest/`).
+Compiler: any C++14 compiler (`g++`) plus optional `nvcc` 12.x for the
+CUDA targets. Override `CUDA_HOME` / `CUDA_ARCH` / `CUDA_CCBIN` on the
+make command line if your toolchain lives elsewhere. No external
+libraries except cuBLAS/cuSOLVER (for the GPU apps) and Google Test
+(vendored in `third_party/googletest/`).
 
 ## Test suite
 
@@ -149,15 +161,39 @@ Google Test (vendored in `third_party/googletest/`).
 | `test_tebd` | 6 | Norm preservation, Sz conservation, entropy growth, bond dim growth, Trotter order convergence, SVD truncation |
 | `test_validate` | 6 | TEBD vs ED for orders 2 and 4, Neel state, entropy, correlations |
 
-## CUDA porting notes
+## CUDA backend (`gpu/gpu_tebd.{h,cu}`)
+
+The M3 backend implements `update_bond_gpu(psi, site, gate, chi_max, svd_min, ws)`
+on top of a persistent `GpuTebdWorkspace` (pre-allocated device buffers,
+pinned host staging, cached cuBLAS/cuSOLVER handles). The pipeline per
+bond is:
+
+1. custom `gate_contract_kernel<2>` -- 2-site gate * theta on the inner d^2
+2. custom `row_to_col_kernel` -- row-major to column-major layout shim
+3. `cusolverDnZgesvdj` (econ=1) -- Jacobi SVD, K=min(m,n)
+4. custom `vidal_restore_left_kernel<2>` -- new_Bi[a,p,b] = (1/Λ_a) U_col[a*d+p,b] S[b]
+5. custom `vidal_restore_right_kernel<2>` -- new_Bj[c,q,e] = conj(V_col[q*chi_R+e,c])
+
+Each stage is bracketed by CUDA events (gated by an optional
+`GpuBondTimings*`) so per-stage time is reportable for the
+`apps/bench_breakdown` driver.
+
+## Apps (`apps/`)
+
+| Binary             | Purpose                                                    |
+|--------------------|------------------------------------------------------------|
+| `sim`              | CPU TEBD driver, prints quench CSV (was M2 `main.cpp`).    |
+| `validate_gpu`     | Runs CPU and GPU TEBDEngines side-by-side; checks observables. |
+| `bench_gpu`        | Full-step CPU vs GPU wall-clock sweep over L and chi_max.  |
+| `bench_update`     | Per-call `update_bond` microbench at fixed chi.            |
+| `bench_breakdown`  | Per-stage GPU time decomposition via CUDA events.          |
+
+## CUDA porting notes (historical, from M2)
 
 - `Cdouble` is `std::complex<double>`, layout-compatible with `cuDoubleComplex`
   via `reinterpret_cast`.
 - All MPS tensors are pre-allocated to `chi_max` capacity -- zero device
   allocations during time evolution.
-- `zgemm` -> `cublasZgemm` or a shared-memory tiled kernel.
-- `svd` (Jacobi) -> parallel Jacobi rotations; non-overlapping column pairs
-  run on separate thread blocks.
 - `update_bond` is the single hot kernel: gate contraction + SVD + Vidal
-  regularization. Even-parity bonds and odd-parity bonds are independent
-  within each Trotter sub-step and can run in parallel.
+  regularisation. Even-parity bonds and odd-parity bonds are independent
+  within each Trotter sub-step and can run in parallel (planned for M4).
