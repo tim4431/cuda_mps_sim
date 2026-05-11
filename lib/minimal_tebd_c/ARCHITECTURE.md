@@ -4,19 +4,36 @@ C++14 implementation of TEBD (Time-Evolving Block Decimation) for the 1D
 transverse-field Ising model. All linear algebra is hand-written -- no
 LAPACK/OpenBLAS -- designed for direct CUDA porting.
 
+## Directory layout
+
+```
+minimal_tebd_c/
+├── core/        # CPU library: tensor, linalg, mps, model, tebd,
+│                # exact_diag, validate
+├── apps/        # driver binaries (currently just sim)
+├── tests/       # Google Test binaries (test_*.cpp)
+├── third_party/googletest/
+├── Makefile     # one Makefile builds all targets
+└── ARCHITECTURE.md
+```
+
+The Makefile uses `-Icore`, so source files include headers by plain
+name (`#include "tensor.h"`) regardless of which subdirectory they
+live in.
+
 ## Module dependency graph
 
 ```
-main.cpp
+apps/sim.cpp
   |
   v
-tebd.h/cpp  -----> mps.h/cpp -----> tensor.h/cpp
-  |                   |                   ^
-  v                   v                   |
-model.h/cpp       linalg.h/cpp -----------+
+core/tebd  -----> core/mps  -----> core/tensor
+  |                  |                  ^
+  v                  v                  |
+core/model      core/linalg ------------+
 
-exact_diag.h/cpp  (validation only)
-validate.h/cpp    (validation only)
+core/exact_diag  (validation only)
+core/validate    (validation only)
 ```
 
 ## Modules
@@ -112,13 +129,14 @@ Automated TEBD vs exact-diag comparison.
 ## Build
 
 ```
-make              # builds tebd_sim (L=30 quench driver)
-make tests        # builds all 6 test binaries
-make run_tests    # builds and runs all tests
+make              # builds apps/sim (L=30 quench driver)
+make tests        # builds the 6 Google Test binaries in tests/
+make run_tests    # builds and runs the test suite
+make clean
 ```
 
-Compiler: any C++14 compiler (`g++`, `nvc++`). No external libraries except
-Google Test (vendored in `googletest/`).
+Compiler: any C++14 compiler (`g++`). No external libraries except
+Google Test (vendored in `third_party/googletest/`).
 
 ## Test suite
 

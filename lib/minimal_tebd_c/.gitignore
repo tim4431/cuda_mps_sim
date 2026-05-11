@@ -1,11 +1,17 @@
-# Compiled executables
-tebd_sim
-test_tensor
-test_linalg
-test_mps
-test_model
-test_tebd
-test_validate
+# Build artefacts
+**/*.o
+*.a
 
-# Static libraries
-gtest_main.a
+# Built binaries
+apps/sim
+apps/validate_gpu
+apps/bench_gpu
+apps/bench_update
+apps/bench_breakdown
+tests/test_*
+!tests/test_*.cpp
+
+# Local CSVs / plots produced by the bench apps and plotting scripts
+*.csv
+*.pdf
+*.png
