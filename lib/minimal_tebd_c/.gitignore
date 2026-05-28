@@ -8,8 +8,14 @@ apps/validate_gpu
 apps/bench_gpu
 apps/bench_update
 apps/bench_breakdown
+apps/bench_svd
+apps/sweep_mpi
 tests/test_*
 !tests/test_*.cpp
+
+# Nsight Systems binary profiling artifacts (large; keep only *.out text stats)
+*.nsys-rep
+*.sqlite
 
 # Local CSVs / plots produced by the bench apps and plotting scripts
 *.csv
