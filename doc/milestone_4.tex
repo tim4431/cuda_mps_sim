@@ -1,22 +1,23 @@
 \documentclass[11pt]{article}
-
 \usepackage[margin=1in]{geometry}
-\usepackage[T1]{fontenc}
-\usepackage[utf8]{inputenc}
-\usepackage{lmodern}
-\usepackage{amsmath}
-\usepackage{amssymb}
-\usepackage{booktabs}
+\usepackage{amsmath,amssymb}
 \usepackage{graphicx}
-\usepackage{hyperref}
-\usepackage{enumitem}
+\usepackage{booktabs}
 \usepackage{xcolor}
-\usepackage{float}
+\usepackage{caption}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{titlesec}
 
+\setlength{\parskip}{2pt}
 \setlength{\parindent}{0pt}
-\setlength{\parskip}{0.40em}
-\setlist[itemize]{leftmargin=1.2em, topsep=0.1em, itemsep=0.10em}
-\setlist[enumerate]{leftmargin=1.4em, topsep=0.1em, itemsep=0.10em}
+\titlespacing*{\section}{0pt}{8pt}{2pt}
+\titleformat{\section}{\normalfont\bfseries}{\thesection.}{0.4em}{}
+\renewcommand{\thesection}{\arabic{section}}
+\captionsetup{font=small,skip=2pt}
+\setlist[itemize]{leftmargin=*,topsep=2pt,itemsep=1pt,parsep=0pt}
+\setlist[enumerate]{leftmargin=*,topsep=2pt,itemsep=1pt,parsep=0pt}
 
 \newcommand{\code}[1]{\texttt{#1}}
 \graphicspath{{figs/}}
@@ -24,19 +25,15 @@
 \begin{document}
 
 \begin{center}
-{\Large \textbf{Milestone 4 Progress Report}}\\[0.3em]
-{\large GPU-Accelerated TEBD for the 1D Transverse-Field Ising Model}
+{\Large\bfseries Milestone 4 Progress Report}\\[2pt]
+GPU-Accelerated TEBD for the 1D Transverse-Field Ising Model
 \end{center}
 
-\textbf{Team:} Chiling Han, Xin Wei, Hercy Shen\quad
-\textbf{Course:} CME 213\quad
+\textbf{Team members:} Hercy Shen, Chiling Han, Xin Wei\\
+\textbf{Course:} CME 213: Parallel Computing with CUDA, MPI and OpenMP\\
 \textbf{Date:} May 27, 2026
 
-\vspace{0.3em}
-
-%----------------------------------------------------------------------
-\textbf{1. Summary of Progress}
-%----------------------------------------------------------------------
+\section{Summary of progress}
 
 Our project simulates real-time dynamics of the 1D transverse-field Ising
 model ($H{=}{-}J\sum_i\sigma_i^x\sigma_{i+1}^x{-}g\sum_i\sigma_i^z$)
@@ -47,12 +44,15 @@ sweeps, and a hand-written complex Jacobi SVD kernel.  All four compile and
 run on \code{gpu-turing} (Quadro RTX\,6000, sm\_75, NVHPC 24.1, CUDA 12.3,
 OpenMPI).
 
-We also evaluated the M2 stretch goal of spatial chain decomposition and
-rejected it for our problem size: even/odd TEBD updates require one MPI
-round-trip per Trotter sub-step, which dominates compute at $L\le80$.
-Task-parallel parameter sweeps are therefore the useful MPI mode here.
+All four deliverables are complete; the custom Jacobi SVD is functional but
+stays experimental (slower than cuSOLVER, which remains the production
+backend), and GPU-side observables are the one M1/M2 item not yet started.
+We rejected spatial chain decomposition for our problem size---even/odd
+updates need one MPI round-trip per sub-step, dominating compute at
+$L\le80$---so task-parallel parameter sweeps are the useful MPI mode here.
 
-\begin{center}\small
+\begin{table}[h]
+\centering\small
 \begin{tabular}{lll}
 \toprule
 \textbf{M4 deliverable} & \textbf{Status} & \textbf{Key files} \\
@@ -63,21 +63,19 @@ MPI parameter sweep & done & \code{apps/sweep\_mpi.cpp} \\
 Custom one-sided Jacobi SVD & done & \code{gpu/gpu\_tebd.cu}, \code{bench\_svd.cpp} \\
 \bottomrule
 \end{tabular}
-\end{center}
+\end{table}
 
 Figure~\ref{fig:physics} shows the relevant physics: entanglement growth
 drives bond-dimension growth, setting the SVD sizes that dominate runtime.
 
-\begin{figure}[H]\centering
+\begin{figure}[!ht]\centering
 \includegraphics[width=0.95\textwidth]{summary.png}
 \caption{Reference TEBD dynamics: entanglement growth increases active bond
 dimension until the $\chi_{\max}$ cap is reached.}
 \label{fig:physics}
 \end{figure}
 
-%----------------------------------------------------------------------
-\textbf{2. Distributed Algorithm and Data Decomposition}
-%----------------------------------------------------------------------
+\section{Distributed algorithm and data decomposition}
 
 Spatial chain decomposition is unattractive for $L\le80$: the even/odd
 Trotter structure forces one MPI round-trip per sub-step.  We instead use
@@ -105,9 +103,7 @@ We evaluated two alternatives:
     (varying $J$), so total pair count grows with $P$.
 \end{itemize}
 
-%----------------------------------------------------------------------
-\textbf{3. MPI Implementation}
-%----------------------------------------------------------------------
+\section{MPI implementation}
 
 The TEBD loop contains no MPI calls.  After all local pairs finish, rank 0
 uses one \textbf{\code{MPI\_Gatherv}} to collect records
@@ -121,9 +117,7 @@ $L\cdot\chi_{\max}$ doubles ($\approx10$\,KB) into a host
 after GPU work completes, there is no computation--communication overlap to
 manage.
 
-%----------------------------------------------------------------------
-\textbf{4. C++ Wrapper and Integration with CUDA}
-%----------------------------------------------------------------------
+\section{C++ wrapper and integration with CUDA}
 
 \textbf{Device selection.}
 After \code{MPI\_Init}, each rank calls
@@ -153,9 +147,7 @@ tolerance $10^{-15}$, $\le200$ sweeps).  For wide matrices ($m<n$),
 \code{col\_major\_adjoint\_kernel} decomposes $A^*$ and swaps buffers.  The
 layout matches \code{cusolverDnZgesvdj}, so Vidal-restore kernels are reused.
 
-%----------------------------------------------------------------------
-\textbf{5. Correctness Testing}
-%----------------------------------------------------------------------
+\section{Correctness testing}
 
 \textbf{Production path.}
 Two validators run the GPU engine side-by-side with the CPU reference for
@@ -175,9 +167,7 @@ reduced error from $\mathcal{O}(10^{-1})$ to $\lesssim10^{-12}$ at large
 $\chi_{\max}$ (Table~\ref{tab:svd}).  The residual reflects accumulated
 trajectory truncation divergence, not per-matrix SVD error.
 
-%----------------------------------------------------------------------
-\textbf{6. Performance, Scaling, and Profiling}
-%----------------------------------------------------------------------
+\section{Performance, scaling, and profiling}
 
 \textbf{Single-GPU timing.}
 Table~\ref{tab:gpu} and Figure~\ref{fig:m4gpu} show
@@ -186,7 +176,7 @@ The GPU overtakes the CPU at $\chi_{\max}\ge48$.  Persistent MPS is 1--3\%
 faster than M3 by removing per-bond H2D/D2H transfers; four streams add
 negligible speedup.
 
-\begin{table}[H]\centering\small
+\begin{table}[h]\centering\small
 \begin{tabular}{rrrrrr}
 \toprule
 $\chi_{\max}$ & CPU (s) & M3 GPU (s) & Persistent (s) & Streamed (s) & CPU/Persistent \\
@@ -203,7 +193,7 @@ $\chi_{\max}$ & CPU (s) & M3 GPU (s) & Persistent (s) & Streamed (s) & CPU/Persi
 \label{tab:gpu}
 \end{table}
 
-\begin{figure}[H]\centering
+\begin{figure}[!ht]\centering
 \includegraphics[width=0.92\textwidth]{m4_gpu_timing.png}
 \caption{M4 single-GPU timing.  Persistent MPS consistently beats the M3
 host-staging path; four streams yield negligible improvement.}
@@ -213,52 +203,28 @@ host-staging path; four streams yield negligible improvement.}
 \textbf{Nsight Systems profiling.}
 We ran two Nsight profiles.
 
-\emph{Single-GPU} (\code{bench\_gpu}, $L{=}20$, $\chi_{\max}{=}64$, 3 steps):
-\begin{verbatim}
-nsys profile --stats=true -o nsys_m4 ./apps/bench_gpu 20 64 3
-\end{verbatim}
-This produces \code{nsys\_m4.nsys-rep}, \code{nsys\_m4.sqlite}, and stdout
-statistics captured in \code{nsys\_m4.out}.  Kernel time shares below come
+\emph{Single-GPU} (\code{bench\_gpu}, $L{=}20$, $\chi_{\max}{=}64$, 3 steps),
+profiled with \code{nsys profile --stats=true}.  Kernel-time shares below come
 from \texttt{cuda\_gpu\_kern\_sum}.
 
 \emph{Multi-GPU distributed} (\code{sweep\_mpi}, 4 ranks, $\chi_{\max}{=}64$,
-3 steps per parameter pair):
-\begin{verbatim}
-mpirun -n 4 nsys profile --stats=true \
-  -o nsys_sweep_%q{OMPI_COMM_WORLD_RANK} \
-  ./apps/sweep_mpi --chi 64 --steps 3 --strong
-\end{verbatim}
-This generates one report per rank
-(\code{nsys\_sweep\_0.nsys-rep}\ldots\code{nsys\_sweep\_3.nsys-rep}); text
-statistics are captured in \code{nsys\_sweep.out}.
-
-\begin{center}\small
-\begin{tabular}{rrrr}
-\toprule
-\textbf{Rank} & \textbf{Top-3 cuSOLVER (\%)} & \textbf{Our kernels (\%)} & \textbf{MPI in profile} \\
-\midrule
-0 & 96.4 & $\le 0.6$ & none \\
-1 & 96.5 & $\le 0.6$ & none \\
-2 & 96.2 & $\le 0.6$ & none \\
-3 & 96.5 & $\le 0.6$ & none \\
-\bottomrule
-\end{tabular}
-\end{center}
+3 steps/pair), launched under \code{mpirun -n 4 nsys profile --stats=true}
+with a per-rank output name, giving one Nsight report per rank.
 
 Distributed-profile findings:
 \begin{itemize}
-  \item \emph{Uniform compute.}  Each rank spends $96.2$--$96.5\%$ of GPU
+  \item \emph{Uniform compute.}  Every rank spends $96.2$--$96.5\%$ of GPU
     kernel time in the three main cuSOLVER Jacobi kernels, matching the
     single-GPU profile.
-  \item \emph{No MPI in the CUDA timeline.}  No MPI calls appear in Nsight;
-    the final \code{MPI\_Gatherv} transfers only $\lesssim10$\,KB and is
-    below profiler resolution.
+  \item \emph{No MPI in the timeline.}  No MPI calls appear in Nsight; the
+    final \code{MPI\_Gatherv} ($\lesssim10$\,KB) is below profiler resolution.
   \item \emph{Memory traffic follows pair count.}  Per-rank H2D/D2H traffic
-    ($\approx23$\,MB and $65$\,MB) comes from loading and finishing four
-    independent parameter pairs, not from distributed communication.
+    ($\approx23$/$65$\,MB) comes from loading and finishing four independent
+    pairs, not from distributed communication.
 \end{itemize}
 
-\begin{center}\small
+\begin{table}[h]
+\centering\small
 \begin{tabular}{lrl}
 \toprule
 \textbf{GPU kernel group} & \textbf{Share of kernel time} & \textbf{Note} \\
@@ -272,16 +238,16 @@ row\_to\_col\_kernel (ours) & $0.06\%$ & \\
 \textbf{MPI communication} & $\mathbf{< 0.01\%}$ & \code{Gatherv} of $\sim$10\,KB at end \\
 \bottomrule
 \end{tabular}
-\end{center}
+\caption{Single-GPU per-stage GPU kernel-time breakdown.}
+\label{tab:breakdown}
+\end{table}
 
 \textbf{Computation vs.\ communication.}
-GPU kernels account for $>99\%$ of wall time.  Our custom kernels together
-are $<0.4\%$ of device time, while cuSOLVER Jacobi is $>99.6\%$ of GPU kernel
-time.  The final \code{MPI\_Gatherv} transfers $\lesssim10$\,KB per rank and
-is negligible.  PCIe traffic in the profiled run is only $\approx0.24$\,MB
-H2D and $0.18$\,MB D2H, confirming that persistent MPS removes M3's bulk
-tensor transfers.  At production $\chi{=}64$--$128$, SVD dominance is even
-stronger.
+GPU kernels are $>99\%$ of wall time; cuSOLVER Jacobi alone is $>99.6\%$ of
+GPU kernel time and our custom kernels together $<0.4\%$.  The final
+\code{MPI\_Gatherv} ($\lesssim10$\,KB/rank) is negligible, and profiled PCIe
+traffic ($\approx0.24$\,MB H2D, $0.18$\,MB D2H) confirms persistent MPS
+removes M3's bulk tensor transfers.
 
 \textbf{MPI scaling.}
 Table~\ref{tab:mpi} and Figure~\ref{fig:mpi} use total rank wall time
@@ -289,10 +255,14 @@ $= \max_r \sum_{i\in{\rm rank}(r)} t_i$, the maximum sequential
 pair-processing time over ranks; \code{sweep\_mpi} reports this directly as
 \code{t\_rank\_max\_s}.
 
-\begin{table}[H]\centering\small
+\begin{table}[h]
+\centering
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{0.85}
+\small
 \begin{tabular}{rrrrrr}
 \toprule
-Mode & Ranks & Pairs/rank & Wall time (s) & Speedup & Efficiency \\
+Mode & Ranks & Pairs/rank & Time (s) & Speedup & Eff. \\
 \midrule
 strong & 1 & 16 & 321.6 & 1.00 & 100\% \\
 strong & 2 &  8 & 184.3 & 1.75 &  87\% \\
@@ -303,12 +273,13 @@ weak   & 2 &  4 &  59.1 & --- &  29\% \\
 weak   & 4 &  4 & 103.5 & --- &  17\% \\
 \bottomrule
 \end{tabular}
-\caption{MPI scaling.  Strong speedup relative to 1-rank total (321.6\,s).}
+\caption{MPI scaling. Strong speedup relative to 1-rank total (321.6\,s).}
 \label{tab:mpi}
 \end{table}
 
-\begin{figure}[H]\centering
-\includegraphics[width=0.92\textwidth]{scaling_m4.png}
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.7\textwidth]{scaling_m4.png}
 \caption{Left: strong-scaling speedup (efficiency annotated).
 Right: weak-scaling total rank wall time with efficiency.}
 \label{fig:mpi}
@@ -317,7 +288,7 @@ Right: weak-scaling total rank wall time with efficiency.}
 \textbf{cuSOLVER vs.\ custom Jacobi SVD.}
 Table~\ref{tab:svd} and Figure~\ref{fig:svd} compare the two SVD paths.
 
-\begin{table}[H]\centering\small
+\begin{table}[h]\centering\small
 \begin{tabular}{rrrrr}
 \toprule
 $\chi_{\max}$ & cuSOLVER (s) & Jacobi (s) & Ratio & max $|\Delta\sigma|$ \\
@@ -332,7 +303,7 @@ $\chi_{\max}$ & cuSOLVER (s) & Jacobi (s) & Ratio & max $|\Delta\sigma|$ \\
 \label{tab:svd}
 \end{table}
 
-\begin{figure}[H]\centering
+\begin{figure}[!ht]\centering
 \includegraphics[width=0.92\textwidth]{svd_compare.png}
 \caption{Custom Jacobi is 1.2--2.2$\times$ slower than cuSOLVER; accuracy
 is $\lesssim10^{-12}$ after fixing the wide-matrix adjoint case.}
@@ -353,9 +324,7 @@ is $\lesssim10^{-12}$ after fixing the wide-matrix adjoint case.}
     falls despite zero in-loop communication.
 \end{itemize}
 
-%----------------------------------------------------------------------
-\textbf{7. Discussion of Approaches and Bottlenecks}
-%----------------------------------------------------------------------
+\section{Discussion of approaches and bottlenecks}
 
 \textbf{What worked well.}  Task-parallel MPI is the right design at this
 scale: zero in-loop communication gives 81\% strong-scaling efficiency at
@@ -382,14 +351,7 @@ bottleneck.
 pairs (larger $J$, higher entanglement), so constant-work weak scaling would
 require balancing by estimated entanglement, not pair count.
 
-\textbf{Bottleneck hierarchy.}  cuSOLVER SVD occupies $>96\%$ of GPU time.
-The bottleneck is therefore the SVD algorithm, not memory bandwidth or launch
-overhead.  Our custom Jacobi kernel is 1.2--2.2$\times$ slower than cuSOLVER
-and remains experimental.
-
-%----------------------------------------------------------------------
-\textbf{8. Challenges and Next Steps}
-%----------------------------------------------------------------------
+\section{Challenges and next steps}
 
 \textbf{Completed challenges.}
 Adding the adjoint fallback for $m<n$ matrices fixed the wide-matrix Jacobi
@@ -399,7 +361,8 @@ stays the production backend.
 
 \textbf{Updated timeline (M4 $\to$ Final Report, Jun 8).}
 
-\begin{center}\small
+\begin{table}[h]
+\centering\small
 \begin{tabular}{p{2.8cm}p{10.4cm}}
 \toprule
 \textbf{Dates} & \textbf{Tasks} \\
@@ -408,7 +371,7 @@ May 27--Jun 1 &
   Run \code{ncu} roofline on \code{bench\_gpu}; extend weak scaling to
   $P{=}8$; extend \code{bench\_svd} to $\chi_{\max}{=}256$; generate the
   entanglement-entropy heatmap from existing $(J,g)$ CSV data.
-  (\emph{Multi-GPU Nsight Systems profile: done, see §6.}) \\
+  (\emph{Multi-GPU Nsight Systems profile: done, see \S6.}) \\
 \addlinespace
 Jun 2--5 &
   Draft 6-page final report: consolidate benchmark and physics results,
@@ -422,7 +385,7 @@ Jun 6--7 &
   \textbf{Final submission on Gradescope.} \\
 \bottomrule
 \end{tabular}
-\end{center}
+\end{table}
 
 \textbf{Stretch goal.}
 Add $\langle\sigma^z_i\rangle$, $\langle\sigma^x_i\rangle$, and two-point
@@ -430,14 +393,9 @@ correlations to \code{sweep\_mpi.cpp}; rerun the phase-diagram sweep; plot
 observable heatmaps.  This was planned in M1/M2 but still needs GPU-side
 measurement code.
 
-\textbf{Build and run.}
-\begin{verbatim}
-cd lib/minimal_tebd_c && make -f Makefile.local
-sbatch --partition=gpu-turing --gres=gpu:1 \
-  --wrap="./apps/validate_gpu && ./apps/bench_gpu > bench_gpu.csv && \
-          ./apps/bench_svd > bench_svd.csv"
-sbatch --partition=gpu-turing --gres=gpu:4 --ntasks=4 \
-  --wrap="mpirun -n 4 ./apps/sweep_mpi --chi 64 --steps 20 --strong"
-\end{verbatim}
+\textbf{Build and run.}  Build with \code{make -f Makefile.local}; jobs are
+submitted via \code{sbatch} on \code{gpu-turing}---1 GPU for \code{validate\_gpu},
+\code{bench\_gpu}, and \code{bench\_svd}, and 4 GPUs for the
+\code{mpirun -n 4 ./apps/sweep\_mpi} sweep.
 
 \end{document}
