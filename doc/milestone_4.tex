@@ -1,0 +1,438 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{float}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.40em}
+\setlist[itemize]{leftmargin=1.2em, topsep=0.1em, itemsep=0.10em}
+\setlist[enumerate]{leftmargin=1.4em, topsep=0.1em, itemsep=0.10em}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\graphicspath{{figs/}}
+
+\begin{document}
+
+\begin{center}
+{\Large \textbf{Milestone 4 Progress Report}}\\[0.3em]
+{\large GPU-Accelerated TEBD for the 1D Transverse-Field Ising Model}
+\end{center}
+
+\textbf{Team:} Chiling Han, Xin Wei, Hercy Shen\quad
+\textbf{Course:} CME 213\quad
+\textbf{Date:} May 27, 2026
+
+\vspace{0.3em}
+
+%----------------------------------------------------------------------
+\textbf{1. Summary of Progress}
+%----------------------------------------------------------------------
+
+Our project simulates real-time dynamics of the 1D transverse-field Ising
+model ($H{=}{-}J\sum_i\sigma_i^x\sigma_{i+1}^x{-}g\sum_i\sigma_i^z$)
+using TEBD on Matrix Product States.  Building on the M3 single-GPU
+SVD-accelerated bond update, M4 adds a persistent device-resident MPS
+(\code{GpuMps}), CUDA streams within each Trotter sub-step, MPI parameter
+sweeps, and a hand-written complex Jacobi SVD kernel.  All four compile and
+run on \code{gpu-turing} (Quadro RTX\,6000, sm\_75, NVHPC 24.1, CUDA 12.3,
+OpenMPI).
+
+We also evaluated the M2 stretch goal of spatial chain decomposition and
+rejected it for our problem size: even/odd TEBD updates require one MPI
+round-trip per Trotter sub-step, which dominates compute at $L\le80$.
+Task-parallel parameter sweeps are therefore the useful MPI mode here.
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+\textbf{M4 deliverable} & \textbf{Status} & \textbf{Key files} \\
+\midrule
+Persistent device MPS (\code{GpuMps}) & done & \code{gpu/gpu\_tebd.h/.cu} \\
+CUDA streams within a sub-step & done & \code{gpu/gpu\_tebd.cu}, \code{bench\_gpu.cpp} \\
+MPI parameter sweep & done & \code{apps/sweep\_mpi.cpp} \\
+Custom one-sided Jacobi SVD & done & \code{gpu/gpu\_tebd.cu}, \code{bench\_svd.cpp} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Figure~\ref{fig:physics} shows the relevant physics: entanglement growth
+drives bond-dimension growth, setting the SVD sizes that dominate runtime.
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.95\textwidth]{summary.png}
+\caption{Reference TEBD dynamics: entanglement growth increases active bond
+dimension until the $\chi_{\max}$ cap is reached.}
+\label{fig:physics}
+\end{figure}
+
+%----------------------------------------------------------------------
+\textbf{2. Distributed Algorithm and Data Decomposition}
+%----------------------------------------------------------------------
+
+Spatial chain decomposition is unattractive for $L\le80$: the even/odd
+Trotter structure forces one MPI round-trip per sub-step.  We instead use
+\emph{task parallelism}: each MPI rank owns one GPU and runs complete,
+independent TEBD evolutions for assigned $(J,g)$ pairs, with \textbf{zero
+in-loop communication}.
+
+Each rank keeps its own device-resident \code{GpuMps}, gate caches, and
+cuSOLVER handle.  The only inter-rank exchange is a final gather of $L$
+doubles per parameter pair (the Schmidt spectrum used for entropy).
+
+We evaluated two alternatives:
+\begin{itemize}
+  \item \emph{Spatial decomposition}: infeasible for small $L$---too much
+    synchronization overhead.
+  \item \emph{Replicated-parameters + distributed chain}: would require
+    per-bond MPI barriers; rejected.
+\end{itemize}
+
+\code{sweep\_mpi.cpp} supports two modes:
+\begin{itemize}
+  \item \textbf{Strong mode}: $4{\times}4{=}16$ fixed $(J,g)$ pairs split
+    round-robin across ranks (pair $i$ goes to rank $i \bmod P$).
+  \item \textbf{Weak mode}: each rank receives 4 new $(J,g)$ pairs per rank
+    (varying $J$), so total pair count grows with $P$.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\textbf{3. MPI Implementation}
+%----------------------------------------------------------------------
+
+The TEBD loop contains no MPI calls.  After all local pairs finish, rank 0
+uses one \textbf{\code{MPI\_Gatherv}} to collect records
+$(J,g,t_{\rm wall},S_{\rm mid})$ from each rank.  \code{MPI\_Gatherv} handles
+uneven per-rank pair counts in strong mode.
+
+MPI never sees device buffers directly.  After each evolution,
+\code{GpuMps::sync\_to\_host} copies at most
+$L\cdot\chi_{\max}$ doubles ($\approx10$\,KB) into a host
+\code{std::vector}; the copy takes $<1$\,ms.  Since communication occurs only
+after GPU work completes, there is no computation--communication overlap to
+manage.
+
+%----------------------------------------------------------------------
+\textbf{4. C++ Wrapper and Integration with CUDA}
+%----------------------------------------------------------------------
+
+\textbf{Device selection.}
+After \code{MPI\_Init}, each rank calls
+\code{cudaSetDevice(rank \% n\_gpus)}.  On a 4-GPU node this gives one GPU
+per rank; on multi-node jobs it selects by local rank.
+
+\textbf{Persistent device MPS.}
+M3 staged the two-site tensor through the host for every bond.  M4 keeps all
+$L$ site tensors
+($\mathbb{C}^{\chi_{\max}\times d\times\chi_{\max}}$) and Schmidt spectra
+($\mathbb{R}^{\chi_{\max}}$) on device inside \code{GpuMps}.  The new
+\code{theta2\_gpu\_kernel} and \code{compute\_ss\_inv\_kernel} build the
+two-site tensor and inverse-$S$ spectrum on device, removing the main M3 PCIe
+transfers.
+
+\textbf{CUDA streams.}
+\code{tebd\_step\_gpu\_persistent} accepts workspaces with distinct
+\code{cudaStream\_t}s and stream-bound cuSOLVER handles.  Independent bonds
+within a Trotter sub-step are assigned round-robin to streams, followed by
+one \code{cudaDeviceSynchronize}.  Opaque helpers
+(\code{gpu\_stream\_create}, etc.) keep CUDA headers out of the MPI wrapper.
+
+\textbf{Custom Jacobi SVD.}
+\code{jacobi\_sweep\_kernel} and \code{jacobi\_finish\_kernel} implement a
+one-block one-sided complex Jacobi SVD (128 threads, cyclic sweeps,
+tolerance $10^{-15}$, $\le200$ sweeps).  For wide matrices ($m<n$),
+\code{col\_major\_adjoint\_kernel} decomposes $A^*$ and swaps buffers.  The
+layout matches \code{cusolverDnZgesvdj}, so Vidal-restore kernels are reused.
+
+%----------------------------------------------------------------------
+\textbf{5. Correctness Testing}
+%----------------------------------------------------------------------
+
+\textbf{Production path.}
+\code{apps/validate\_gpu} compares the persistent GPU path against the CPU
+reference for 30 Trotter steps ($L{=}12$, $\chi_{\max}{=}32$, $dt{=}0.05$,
+order~2).  The maximum discrepancy is $3.229\times10^{-13}$.  All 54 unit
+tests pass, and 1-, 2-, and 4-rank sweeps match the single-rank results for
+the same parameter pairs.
+
+\textbf{Custom Jacobi path.}
+\code{apps/bench\_svd} runs 20-step TEBD evolutions and reports the maximum
+Schmidt-spectrum difference vs.\ cuSOLVER.  The wide-matrix adjoint fix
+reduced error from $\mathcal{O}(10^{-1})$ to $\lesssim10^{-12}$ at large
+$\chi_{\max}$ (Table~\ref{tab:svd}).  The residual reflects accumulated
+trajectory truncation divergence, not per-matrix SVD error.
+
+%----------------------------------------------------------------------
+\textbf{6. Performance, Scaling, and Profiling}
+%----------------------------------------------------------------------
+
+\textbf{Single-GPU timing.}
+Table~\ref{tab:gpu} and Figure~\ref{fig:m4gpu} show
+\code{bench\_gpu.cpp} results ($L=20$, 20 steps, \code{gpu-turing}).
+The GPU overtakes the CPU at $\chi_{\max}\ge48$.  Persistent MPS is 1--3\%
+faster than M3 by removing per-bond H2D/D2H transfers; four streams add
+negligible speedup.
+
+\begin{table}[H]\centering\small
+\begin{tabular}{rrrrrr}
+\toprule
+$\chi_{\max}$ & CPU (s) & M3 GPU (s) & Persistent (s) & Streamed (s) & CPU/Persistent \\
+\midrule
+16  & 2.049 & 5.372 & 5.180 & 5.183 & 0.40 \\
+32  & 9.601 & 13.196 & 12.992 & 13.064 & 0.74 \\
+48  & 20.073 & 17.428 & 17.075 & 17.079 & 1.18 \\
+64  & 24.099 & 18.250 & 17.709 & 17.745 & 1.36 \\
+96  & 24.484 & 18.269 & 17.722 & 17.854 & 1.38 \\
+128 & 24.533 & 18.334 & 17.848 & 17.853 & 1.37 \\
+\bottomrule
+\end{tabular}
+\caption{Single-GPU TEBD, $L=20$, $N_{\rm steps}=20$.}
+\label{tab:gpu}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.92\textwidth]{m4_gpu_timing.png}
+\caption{M4 single-GPU timing.  Persistent MPS consistently beats the M3
+host-staging path; four streams yield negligible improvement.}
+\label{fig:m4gpu}
+\end{figure}
+
+\textbf{Nsight Systems profiling.}
+We ran two Nsight profiles.
+
+\emph{Single-GPU} (\code{bench\_gpu}, $L{=}20$, $\chi_{\max}{=}64$, 3 steps):
+\begin{verbatim}
+nsys profile --stats=true -o nsys_m4 ./apps/bench_gpu 20 64 3
+\end{verbatim}
+This produces \code{nsys\_m4.nsys-rep}, \code{nsys\_m4.sqlite}, and stdout
+statistics captured in \code{nsys\_m4.out}.  Kernel time shares below come
+from \texttt{cuda\_gpu\_kern\_sum}.
+
+\emph{Multi-GPU distributed} (\code{sweep\_mpi}, 4 ranks, $\chi_{\max}{=}64$,
+3 steps per parameter pair):
+\begin{verbatim}
+mpirun -n 4 nsys profile --stats=true \
+  -o nsys_sweep_%q{OMPI_COMM_WORLD_RANK} \
+  ./apps/sweep_mpi --chi 64 --steps 3 --strong
+\end{verbatim}
+This generates one report per rank
+(\code{nsys\_sweep\_0.nsys-rep}\ldots\code{nsys\_sweep\_3.nsys-rep}); text
+statistics are captured in \code{nsys\_sweep.out}.
+
+\begin{center}\small
+\begin{tabular}{rrrr}
+\toprule
+\textbf{Rank} & \textbf{Top-3 cuSOLVER (\%)} & \textbf{Our kernels (\%)} & \textbf{MPI in profile} \\
+\midrule
+0 & 96.4 & $\le 0.6$ & none \\
+1 & 96.5 & $\le 0.6$ & none \\
+2 & 96.2 & $\le 0.6$ & none \\
+3 & 96.5 & $\le 0.6$ & none \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Distributed-profile findings:
+\begin{itemize}
+  \item \emph{Uniform compute.}  Each rank spends $96.2$--$96.5\%$ of GPU
+    kernel time in the three main cuSOLVER Jacobi kernels, matching the
+    single-GPU profile.
+  \item \emph{No MPI in the CUDA timeline.}  No MPI calls appear in Nsight;
+    the final \code{MPI\_Gatherv} transfers only $\lesssim10$\,KB and is
+    below profiler resolution.
+  \item \emph{Memory traffic follows pair count.}  Per-rank H2D/D2H traffic
+    ($\approx23$\,MB and $65$\,MB) comes from loading and finishing four
+    independent parameter pairs, not from distributed communication.
+\end{itemize}
+
+\begin{center}\small
+\begin{tabular}{lrl}
+\toprule
+\textbf{GPU kernel group} & \textbf{Share of kernel time} & \textbf{Note} \\
+\midrule
+cuSOLVER gesvdbj + svd\_col/row\_rotate & $96.4\%$ & top-3 Jacobi SVD kernels \\
+All remaining cuSOLVER helpers & $3.2\%$ & sort, scale, QR, etc. \\
+gate\_contract\_kernel (ours) & $0.09\%$ & \\
+vidal\_restore left+right (ours) & $0.13\%$ & \\
+theta2 + ss\_inv kernels (ours) & $0.11\%$ & persistent-path only \\
+row\_to\_col\_kernel (ours) & $0.06\%$ & \\
+\textbf{MPI communication} & $\mathbf{< 0.01\%}$ & \code{Gatherv} of $\sim$10\,KB at end \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Computation vs.\ communication.}
+GPU kernels account for $>99\%$ of wall time.  Our custom kernels together
+are $<0.4\%$ of device time, while cuSOLVER Jacobi is $>99.6\%$ of GPU kernel
+time.  The final \code{MPI\_Gatherv} transfers $\lesssim10$\,KB per rank and
+is negligible.  PCIe traffic in the profiled run is only $\approx0.24$\,MB
+H2D and $0.18$\,MB D2H, confirming that persistent MPS removes M3's bulk
+tensor transfers.  At production $\chi{=}64$--$128$, SVD dominance is even
+stronger.
+
+\textbf{MPI scaling.}
+Table~\ref{tab:mpi} and Figure~\ref{fig:mpi} use total rank wall time
+$= \max_r \sum_{i\in{\rm rank}(r)} t_i$, the maximum sequential
+pair-processing time over ranks.
+
+\begin{table}[H]\centering\small
+\begin{tabular}{rrrrrr}
+\toprule
+Mode & Ranks & Pairs/rank & Wall time (s) & Speedup & Efficiency \\
+\midrule
+strong & 1 & 16 & 321.6 & 1.00 & 100\% \\
+strong & 2 &  8 & 184.3 & 1.75 &  87\% \\
+strong & 4 &  4 &  99.1 & 3.24 &  81\% \\
+\midrule
+weak   & 1 &  4 &  17.1 & --- & 100\% \\
+weak   & 2 &  4 &  59.1 & --- &  29\% \\
+weak   & 4 &  4 & 103.5 & --- &  17\% \\
+\bottomrule
+\end{tabular}
+\caption{MPI scaling.  Strong speedup relative to 1-rank total (321.6\,s).}
+\label{tab:mpi}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.92\textwidth]{scaling_m4.png}
+\caption{Left: strong-scaling speedup (efficiency annotated).
+Right: weak-scaling total rank wall time with efficiency.}
+\label{fig:mpi}
+\end{figure}
+
+\textbf{cuSOLVER vs.\ custom Jacobi SVD.}
+Table~\ref{tab:svd} and Figure~\ref{fig:svd} compare the two SVD paths.
+
+\begin{table}[H]\centering\small
+\begin{tabular}{rrrrr}
+\toprule
+$\chi_{\max}$ & cuSOLVER (s) & Jacobi (s) & Ratio & max $|\Delta\sigma|$ \\
+\midrule
+16  & 5.318 & 6.125  & 0.868 & $4.74\times10^{-14}$ \\
+32  & 13.028 & 20.441 & 0.637 & $5.84\times10^{-13}$ \\
+64  & 18.272 & 39.982 & 0.457 & $1.00\times10^{-12}$ \\
+128 & 18.458 & 40.343 & 0.458 & $1.00\times10^{-12}$ \\
+\bottomrule
+\end{tabular}
+\caption{\code{bench\_svd}: cuSOLVER vs.\ custom Jacobi, $L=20$, 20 steps.}
+\label{tab:svd}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.92\textwidth]{svd_compare.png}
+\caption{Custom Jacobi is 1.2--2.2$\times$ slower than cuSOLVER; accuracy
+is $\lesssim10^{-12}$ after fixing the wide-matrix adjoint case.}
+\label{fig:svd}
+\end{figure}
+
+\textbf{Scalability bottlenecks.}
+\begin{itemize}
+  \item \emph{Compute bottleneck (single GPU).}  cuSOLVER Jacobi SVD kernels
+    account for $>99.6\%$ of GPU kernel time.  Persistent MPS and stream
+    overlap cannot move the ceiling because SVD dominates.
+  \item \emph{Load imbalance (strong scaling).}  Round-robin assignment gives
+    rank 3 the four hardest pairs ($J{=}2.0$, all $g$), which run $2.2\times$
+    longer than rank 0's cheapest pairs.  This explains the 19\% efficiency
+    gap at $P{=}4$; communication is $<0.01\%$.
+  \item \emph{Non-uniform work (weak scaling).}  Each added rank receives
+    higher-$J$ pairs with more entanglement and higher cost, so efficiency
+    falls despite zero in-loop communication.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\textbf{7. Discussion of Approaches and Bottlenecks}
+%----------------------------------------------------------------------
+
+\textbf{What worked well.}  Task-parallel MPI is the right design at this
+scale: zero in-loop communication gives 81\% strong-scaling efficiency at
+4 ranks, limited by load imbalance.  Persistent MPS also removes the M3 PCIe
+bottleneck.
+
+\textbf{What we would do differently.}
+\begin{itemize}
+  \item \emph{Load-balanced assignment.}  Round-robin ignores the large
+    runtime spread ($5$\,s for $J{=}0.25$ vs.\ $32$\,s for $J{=}2.0$).
+    Sorting by estimated $\chi_{\rm active}$ and bin-packing to ranks should
+    raise strong-scaling efficiency to $\gtrsim95\%$.
+  \item \emph{CUDA-aware MPI.}  Currently we \code{sync\_to\_host} before
+    gather.  CUDA-aware MPI could gather device buffers directly, though the
+    $<10$\,KB transfer makes this immaterial here.
+  \item \emph{Spatial decomposition for large chains.}  For $L\gg100$ the
+    task-parallel approach may run out of distinct pairs.  A bond-cut spatial
+    decomposition would then require one \code{MPI\_Allgather} per Trotter
+    sub-step for the boundary Schmidt spectrum ($\chi_{\max}$ doubles).
+\end{itemize}
+
+\textbf{Scalability limits.}  Strong mode exhausts the 16-pair grid at
+16 ranks; beyond that, ranks idle.  Weak mode gives later ranks harder
+pairs (larger $J$, higher entanglement), so constant-work weak scaling would
+require balancing by estimated entanglement, not pair count.
+
+\textbf{Bottleneck hierarchy.}  cuSOLVER SVD occupies $>96\%$ of GPU time.
+The bottleneck is therefore the SVD algorithm, not memory bandwidth or launch
+overhead.  Our custom Jacobi kernel is 1.2--2.2$\times$ slower than cuSOLVER
+and remains experimental.
+
+%----------------------------------------------------------------------
+\textbf{8. Challenges and Next Steps}
+%----------------------------------------------------------------------
+
+\textbf{Completed challenges.}
+Adding the adjoint fallback for $m<n$ matrices fixed the wide-matrix Jacobi
+bug and reduced trajectory-level error by nine orders of magnitude.  The
+custom kernel remains 1.2--2.2$\times$ slower than cuSOLVER, so cuSOLVER
+stays the production backend.
+
+\textbf{Updated timeline (M4 $\to$ Final Report, Jun 8).}
+
+\begin{center}\small
+\begin{tabular}{p{2.8cm}p{10.4cm}}
+\toprule
+\textbf{Dates} & \textbf{Tasks} \\
+\midrule
+May 27--Jun 1 &
+  Run \code{ncu} roofline on \code{bench\_gpu}; extend weak scaling to
+  $P{=}8$; extend \code{bench\_svd} to $\chi_{\max}{=}256$; generate the
+  entanglement-entropy heatmap from existing $(J,g)$ CSV data.
+  (\emph{Multi-GPU Nsight Systems profile: done, see §6.}) \\
+\addlinespace
+Jun 2--5 &
+  Draft 6-page final report: consolidate benchmark and physics results,
+  write analysis sections, and incorporate figures. \\
+\addlinespace
+Jun 6--7 &
+  Internal review; revise report; verify \code{submit\_all.sh}
+  reproduces all figures from a clean build. \\
+\addlinespace
+\textbf{Jun 8} &
+  \textbf{Final submission on Gradescope.} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Stretch goal.}
+Add $\langle\sigma^z_i\rangle$, $\langle\sigma^x_i\rangle$, and two-point
+correlations to \code{sweep\_mpi.cpp}; rerun the phase-diagram sweep; plot
+observable heatmaps.  This was planned in M1/M2 but still needs GPU-side
+measurement code.
+
+\textbf{Build and run.}
+\begin{verbatim}
+cd lib/minimal_tebd_c && make -f Makefile.local
+sbatch --partition=gpu-turing --gres=gpu:1 \
+  --wrap="./apps/validate_gpu && ./apps/bench_gpu > bench_gpu.csv && \
+          ./apps/bench_svd > bench_svd.csv"
+sbatch --partition=gpu-turing --gres=gpu:4 --ntasks=4 \
+  --wrap="mpirun -n 4 ./apps/sweep_mpi --chi 64 --steps 20 --strong"
+\end{verbatim}
+
+\end{document}
