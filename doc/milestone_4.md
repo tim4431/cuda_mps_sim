@@ -199,9 +199,14 @@ and verifies that the Schmidt spectra agree to ≤ 10⁻¹³.
 ## Correctness
 
 - All 54 unit tests (6 suites) pass after M4 changes.
-- `apps/validate_gpu` confirms GPU↔CPU agreement to ~10⁻¹³ (requires GPU node).
+- `apps/validate_gpu` confirms the per-bond (M3) GPU path matches CPU to ~10⁻¹³
+  (requires GPU node).
+- `apps/validate_persistent` confirms the persistent device-MPS path (used by
+  the sweep) matches CPU to ~10⁻¹³, identical across 1 and 4 streams.
 - `bench_svd` reports max Schmidt-spectrum error between cuSOLVER and custom
   Jacobi paths.
+- `scripts/verify.sh` runs all of the above plus the 1/2/4-rank sweep
+  consistency check in one `sbatch` job.
 
 ---
 
@@ -218,10 +223,14 @@ make -f Makefile.local run_tests
 sbatch --partition=gpu-turing --gres=gpu:1 --wrap="./apps/bench_gpu"
 sbatch --partition=gpu-turing --gres=gpu:1 --wrap="./apps/bench_svd"
 sbatch --partition=gpu-turing --gres=gpu:1 --wrap="./apps/validate_gpu"
+sbatch --partition=gpu-turing --gres=gpu:1 --wrap="./apps/validate_persistent"
 
 # MPI parameter sweep (multi-GPU node):
 sbatch --partition=gpu-turing --gres=gpu:4 --ntasks=4 \
        --wrap="mpirun -n 4 ./apps/sweep_mpi --chi 64 --steps 20"
+
+# Full correctness pass (build + tests + validators + 1/2/4-rank consistency):
+sbatch scripts/verify.sh
 ```
 
 ---

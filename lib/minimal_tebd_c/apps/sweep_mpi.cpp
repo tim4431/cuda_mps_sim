@@ -248,29 +248,48 @@ int main(int argc, char** argv) {
               recv_buf.data(), counts.data(), displs.data(), MPI_DOUBLE,
               0, MPI_COMM_WORLD);
 
-  // Rank 0: print CSV.
+  // Rank 0: print CSV and scaling summary.
   if (rank == 0) {
     std::printf("rank,J,g,L,chi_max,N_steps,t_wall_s,max_chi,final_entropy\n");
-    // We don't know which rank sent which result for the combined buffer.
-    // Since counts differ, emit without rank attribution.
     int n_total = (int)recv_buf.size() / FIELDS;
+
+    // displs/counts give each rank's contiguous slice of the gathered buffer,
+    // so every record can be attributed to its source rank and the per-rank
+    // wall time summed.
+    std::vector<double> rank_total(n_ranks, 0.0);
+    int src = 0;
     for (int i = 0; i < n_total; ++i) {
-      double J   = recv_buf[i * FIELDS + 0];
-      double g   = recv_buf[i * FIELDS + 1];
-      double tw  = recv_buf[i * FIELDS + 2];
-      int    mc  = int(recv_buf[i * FIELDS + 3]);
-      double ent = recv_buf[i * FIELDS + 4];
-      std::printf("-1,%.2f,%.2f,%d,%d,%d,%.6f,%d,%.6f\n",
-                  J, g, L, chi_max, N_steps, tw, mc, ent);
+      int elem = i * FIELDS;
+      while (src + 1 < n_ranks && elem >= displs[src] + counts[src]) ++src;
+      double J   = recv_buf[elem + 0];
+      double g   = recv_buf[elem + 1];
+      double tw  = recv_buf[elem + 2];
+      int    mc  = int(recv_buf[elem + 3]);
+      double ent = recv_buf[elem + 4];
+      rank_total[src] += tw;
+      std::printf("%d,%.2f,%.2f,%d,%d,%d,%.6f,%d,%.6f\n",
+                  src, J, g, L, chi_max, N_steps, tw, mc, ent);
     }
-    // Also print scaling summary: max wall time across all results.
-    double t_max = 0.0;
-    for (int i = 0; i < n_total; ++i)
-      t_max = std::max(t_max, recv_buf[i * FIELDS + 2]);
+
+    // Scaling metrics:
+    //   t_rank_max_s : max over ranks of summed per-rank wall time -- the
+    //                  strong-scaling denominator (speedup_P = t_rank_max(1) /
+    //                  t_rank_max(P)).
+    //   t_pair_max_s : slowest single (J, g) pair (load-imbalance indicator).
+    //   t_sum_s      : total sequential work across all pairs.
+    double t_rank_max = 0.0, t_pair_max = 0.0, t_sum = 0.0;
+    for (int r = 0; r < n_ranks; ++r)
+      t_rank_max = std::max(t_rank_max, rank_total[r]);
+    for (int i = 0; i < n_total; ++i) {
+      double tw = recv_buf[i * FIELDS + 2];
+      t_pair_max = std::max(t_pair_max, tw);
+      t_sum += tw;
+    }
     std::fprintf(stderr,
-                 "# scaling: n_ranks=%d total_params=%d "
-                 "t_max_s=%.4f mode=%s\n",
-                 n_ranks, n_total, t_max, weak_mode ? "weak" : "strong");
+                 "# scaling: n_ranks=%d total_params=%d mode=%s "
+                 "t_rank_max_s=%.4f t_pair_max_s=%.4f t_sum_s=%.4f\n",
+                 n_ranks, n_total, weak_mode ? "weak" : "strong",
+                 t_rank_max, t_pair_max, t_sum);
     std::fflush(stdout);
   }
 
