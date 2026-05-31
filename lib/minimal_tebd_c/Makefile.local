@@ -1,0 +1,155 @@
+# Makefile for local development on hpcc-login / gpu-turing nodes
+# (Quadro RTX 6000, Turing, sm_75).
+#
+# Usage:
+#   make -f Makefile.local
+#   make -f Makefile.local tests
+#   make -f Makefile.local run_tests
+#   make -f Makefile.local bench
+#   make -f Makefile.local clean
+#
+# To run GPU apps, submit to the gpu-turing partition:
+#   sbatch --partition=gpu-turing --gres=gpu:1 --wrap="./apps/validate_gpu"
+
+# ---------------------------------------------------------------------------
+# Toolchain
+# ---------------------------------------------------------------------------
+
+CXX       ?= g++
+CXXFLAGS   = -O2 -std=c++14 -Icore -Igpu \
+             -I$(_SDK)/cuda/12.3/targets/x86_64-linux/include
+
+_SDK       = /home/cme213/software/nvidia-hpc-sdk/2024_24.1/Linux_x86_64/24.1
+CUDA_HOME  ?= $(_SDK)/cuda/12.3
+NVCC       ?= $(_SDK)/compilers/bin/nvcc
+CUDA_ARCH  ?= sm_75
+CUDA_CCBIN ?= /usr/bin/g++
+
+CUDA_INC    = -I$(CUDA_HOME)/targets/x86_64-linux/include
+NVCCFLAGS   = -O2 -std=c++14 -arch=$(CUDA_ARCH) -ccbin $(CUDA_CCBIN) \
+              -Xcompiler -O2 -Icore -Igpu $(CUDA_INC)
+
+# cuBLAS/cuSOLVER are in math_libs, not cuda/12.3/targets, on this SDK layout.
+CUDA_LDFLAGS = \
+  -L$(_SDK)/math_libs/12.3/lib64 \
+  -L$(CUDA_HOME)/targets/x86_64-linux/lib \
+  -lcublas -lcusolver -lcudart \
+  -Wl,-rpath,$(_SDK)/math_libs/12.3/lib64 \
+  -Wl,-rpath,$(CUDA_HOME)/targets/x86_64-linux/lib
+
+# ---------------------------------------------------------------------------
+# Source listings
+# ---------------------------------------------------------------------------
+
+CORE_SRCS := $(wildcard core/*.cpp)
+CORE_OBJS := $(CORE_SRCS:.cpp=.o)
+
+GPU_SRCS  := $(wildcard gpu/*.cu)
+GPU_OBJS  := $(GPU_SRCS:.cu=.o)
+
+CPU_APP_SRCS := $(wildcard apps/sim.cpp)
+CPU_APPS     := $(CPU_APP_SRCS:.cpp=)
+
+# sweep_mpi is excluded from wildcard GPU apps — it needs mpicxx, not nvc++.
+GPU_APP_SRCS := $(filter-out apps/sim.cpp apps/sweep_mpi.cpp, \
+                              $(wildcard apps/*.cpp))
+GPU_APPS     := $(GPU_APP_SRCS:.cpp=)
+
+# MPI detection (uses NVHPC's bundled Open MPI).
+_SDK    := /home/cme213/software/nvidia-hpc-sdk/2024_24.1/Linux_x86_64/24.1
+MPICXX  ?= $(_SDK)/comm_libs/mpi/bin/mpicxx
+MPI_INC  = -I$(_SDK)/comm_libs/mpi/include
+MPI_FOUND := $(shell test -x $(MPICXX) && echo yes)
+
+ifeq ($(MPI_FOUND),yes)
+  MPI_APPS := apps/sweep_mpi
+else
+  MPI_APPS :=
+endif
+
+ALL_APPS := $(CPU_APPS) $(GPU_APPS) $(MPI_APPS)
+
+# ---------------------------------------------------------------------------
+# Build rules
+# ---------------------------------------------------------------------------
+
+default: $(ALL_APPS)
+
+bench: $(GPU_APPS)
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+gpu/%.o: gpu/%.cu
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
+
+apps/sim: apps/sim.o $(CORE_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@
+
+$(GPU_APPS): apps/%: apps/%.o $(CORE_OBJS) $(GPU_OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(CUDA_LDFLAGS)
+
+# ---------------------------------------------------------------------------
+# Google Test
+# ---------------------------------------------------------------------------
+
+GTEST_DIR   = third_party/googletest/googletest
+GTEST_INC   = $(GTEST_DIR)/include
+GTEST_FLAGS = -isystem $(GTEST_INC) -O2
+
+gtest-all.o: $(GTEST_DIR)/src/gtest-all.cc
+	$(CXX) $(GTEST_FLAGS) -I$(GTEST_DIR) -c $< -o $@
+
+gtest_main.o: $(GTEST_DIR)/src/gtest_main.cc
+	$(CXX) $(GTEST_FLAGS) -I$(GTEST_DIR) -c $< -o $@
+
+gtest_main.a: gtest-all.o gtest_main.o
+	$(AR) $(ARFLAGS) $@ $^
+
+tests/%.o: tests/%.cpp
+	$(CXX) $(CXXFLAGS) -isystem $(GTEST_INC) -c $< -o $@
+
+tests/test_tensor:   tests/test_tensor.o   core/tensor.o                  gtest_main.a
+	$(CXX) $^ -o $@
+tests/test_linalg:   tests/test_linalg.o   core/tensor.o core/linalg.o   gtest_main.a
+	$(CXX) $^ -o $@
+tests/test_mps:      tests/test_mps.o      $(CORE_OBJS)                   gtest_main.a
+	$(CXX) $^ -o $@
+tests/test_model:    tests/test_model.o    $(CORE_OBJS)                   gtest_main.a
+	$(CXX) $^ -o $@
+tests/test_tebd:     tests/test_tebd.o     $(CORE_OBJS)                   gtest_main.a
+	$(CXX) $^ -o $@
+tests/test_validate: tests/test_validate.o $(CORE_OBJS)                   gtest_main.a
+	$(CXX) $^ -o $@
+
+TEST_BINS := tests/test_tensor tests/test_linalg tests/test_mps \
+             tests/test_model tests/test_tebd tests/test_validate
+
+tests: $(TEST_BINS)
+
+run_tests: $(TEST_BINS)
+	@set -e; for t in $(TEST_BINS); do echo "=== $$t ==="; $$t; done
+
+# ---------------------------------------------------------------------------
+# Housekeeping
+# ---------------------------------------------------------------------------
+
+clean:
+	rm -f core/*.o gpu/*.o apps/*.o tests/*.o
+	rm -f gtest-all.o gtest_main.o gtest_main.a
+	rm -f $(CPU_APPS) $(GPU_APPS) $(MPI_APPS) $(TEST_BINS)
+
+# ---------------------------------------------------------------------------
+# MPI parameter sweep (special: compiled with mpicxx, linked with CUDA libs)
+# ---------------------------------------------------------------------------
+ifeq ($(MPI_FOUND),yes)
+MPICXXFLAGS = $(CXXFLAGS) $(MPI_INC) $(CUDA_INC) -DUSE_GPU
+
+apps/sweep_mpi.o: apps/sweep_mpi.cpp
+	$(MPICXX) $(MPICXXFLAGS) -c $< -o $@
+
+apps/sweep_mpi: apps/sweep_mpi.o $(CORE_OBJS) $(GPU_OBJS)
+	$(MPICXX) $(MPICXXFLAGS) $^ -o $@ $(CUDA_LDFLAGS)
+endif
+
+.PHONY: default bench tests run_tests clean

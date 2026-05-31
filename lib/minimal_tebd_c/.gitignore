@@ -1,12 +1,28 @@
-# Compiled executables
-tebd_sim
-validate_driver
-test_tensor
-test_linalg
-test_mps
-test_model
-test_tebd
-test_validate
+# Build artefacts
+**/*.o
+*.a
 
-# Static libraries
-gtest_main.a
+# Built binaries
+apps/sim
+apps/validate_gpu
+apps/validate_persistent
+apps/bench_gpu
+apps/bench_update
+apps/bench_breakdown
+apps/bench_svd
+apps/sweep_mpi
+tests/test_*
+!tests/test_*.cpp
+
+# Nsight Systems binary profiling artifacts (large; keep only *.out text stats)
+*.nsys-rep
+*.sqlite
+
+# Local CSVs / plots produced by the bench apps and plotting scripts
+*.csv
+*.pdf
+*.png
+
+# Run outputs from scripts/verify.sh
+slurm_*.out
+*.err
