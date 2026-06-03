@@ -1,8 +1,9 @@
 // MPI parameter sweep for TEBD phase diagram computation.
 //
-// Each MPI rank is assigned one or more (J, g) parameter pairs from a grid
-// and runs an independent GPU TEBD evolution.  Zero in-loop MPI communication;
-// only MPI_Scatter (params) and MPI_Gather (results) at the boundaries.
+// Each MPI rank builds its own (J, g) parameter pairs locally (no scatter) and
+// runs an independent GPU TEBD evolution.  Zero in-loop MPI communication; the
+// only exchange is a final result gather: MPI_Gather of per-rank record counts
+// followed by MPI_Gatherv of the (J, g, t_wall, max_chi, entropy) records.
 //
 // CSV output to stdout (rank 0 only):
 //   rank,J,g,L,chi_max,N_steps,t_wall_s,max_chi,final_entropy
