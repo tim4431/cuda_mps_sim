@@ -9,7 +9,7 @@ kernels.
 ## Directory layout
 
 ```
-minimal_tebd_c/
+src/
 ├── core/        # CPU library: tensor, linalg, mps, model, tebd,
 │                # exact_diag, validate
 ├── gpu/         # CUDA backend: gpu_tebd.{h,cu}

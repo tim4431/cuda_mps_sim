@@ -10,18 +10,18 @@
 # Reports t_rank_max_s ( = max_r sum_i t_i ) per (mode, ranks) and a computed
 # speedup / parallel-efficiency table.
 #
-# Submit from lib/minimal_tebd_c/ :
+# Submit from src/ :
 #   sbatch scripts/bench_scaling.sh
 # Override problem size (e.g. if the job risks the 15-min cap, lower STEPS):
 #   sbatch --export=ALL,CHI=64,STEPS=6 scripts/bench_scaling.sh
 
 set -uo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
-if [ ! -f Makefile.local ] && [ -f lib/minimal_tebd_c/Makefile.local ]; then
-  cd lib/minimal_tebd_c
+if [ ! -f Makefile.local ] && [ -f src/Makefile.local ]; then
+  cd src
 fi
 if [ ! -f Makefile.local ]; then
-  echo "ERROR: cannot find Makefile.local (cwd=$(pwd)). Submit from lib/minimal_tebd_c/."
+  echo "ERROR: cannot find Makefile.local (cwd=$(pwd)). Submit from src/."
   exit 1
 fi
 

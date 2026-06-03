@@ -3,8 +3,8 @@
     "allow": [
       "Bash(conda run *)",
       "WebSearch",
-      "Bash(make run_tests -C /home/tim/cuda_mps_sim/lib/minimal_tebd_c)",
-      "Bash(make -C /home/tim/cuda_mps_sim/lib/minimal_tebd_c tebd_sim)",
+      "Bash(make run_tests -C /home/tim/Code/cuda_mps_sim/src)",
+      "Bash(make -C /home/tim/Code/cuda_mps_sim/src tebd_sim)",
       "Bash(./tebd_sim)"
     ]
   }

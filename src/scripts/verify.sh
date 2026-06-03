@@ -7,7 +7,7 @@
 #SBATCH --output=slurm_%j.out
 
 # End-to-end correctness verification for the M4 (distributed/persistent) work.
-# Submit from lib/minimal_tebd_c/ :  sbatch scripts/verify.sh
+# Submit from src/ :  sbatch scripts/verify.sh
 # Then send back the resulting slurm_<jobid>.out.
 
 set -uo pipefail
@@ -15,11 +15,11 @@ set -uo pipefail
 # Resolve the build dir robustly.  sbatch copies this script to a spool dir, so
 # $0 is unreliable; the job starts in SLURM_SUBMIT_DIR (where sbatch was run).
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
-if [ ! -f Makefile.local ] && [ -f lib/minimal_tebd_c/Makefile.local ]; then
-  cd lib/minimal_tebd_c
+if [ ! -f Makefile.local ] && [ -f src/Makefile.local ]; then
+  cd src
 fi
 if [ ! -f Makefile.local ]; then
-  echo "ERROR: cannot find Makefile.local (cwd=$(pwd)). Submit from lib/minimal_tebd_c/."
+  echo "ERROR: cannot find Makefile.local (cwd=$(pwd)). Submit from src/."
   exit 1
 fi
 
