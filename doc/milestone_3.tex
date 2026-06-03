@@ -1,0 +1,279 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{titlesec}
+
+\setlength{\parskip}{2pt}
+\setlength{\parindent}{0pt}
+\titlespacing*{\section}{0pt}{8pt}{2pt}
+\titleformat{\section}{\normalfont\bfseries}{\thesection.}{0.4em}{}
+\renewcommand{\thesection}{\arabic{section}}
+\captionsetup{font=small,skip=2pt}
+\setlist[itemize]{leftmargin=*,topsep=2pt,itemsep=1pt,parsep=0pt}
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries Milestone 3 Progress Report}\\[2pt]
+GPU-Accelerated TEBD for the 1D Transverse-Field Ising Model
+\end{center}
+
+\textbf{Team members:} Chiling Han, Xin Wei, Hercy Shen\\
+\textbf{Course:} CME 213: Parallel Computing with CUDA, MPI and OpenMP
+
+\section{Summary of progress} The M2 CPU reference was designed to be
+CUDA-portable, and M3 cashes that in. We added \texttt{gpu\_tebd.cu}
+(four custom kernels + cuSOLVER Jacobi SVD), a persistent
+\texttt{GpuTebdWorkspace}, a CPU-vs-GPU validator, and two benchmarking
+harnesses. All M2 unit tests still pass; the GPU \texttt{update\_bond}
+agrees with the CPU baseline to $\mathcal{O}(\epsilon_\text{trunc})$ on
+every quench config we tested (Table~\ref{tab:correct}). Single-bond
+microbenchmarks show the expected $\mathcal{O}(\chi^3)$ asymptote and a
+CPU/GPU crossover at $\chi\!\approx\!96{-}128$
+(Fig.~\ref{fig:bench}\,b); the per-stage breakdown
+(Fig.~\ref{fig:break}) shows cuSOLVER's \texttt{gesvdj} is $>$99\,\% of
+the GPU bond cost across the entire $\chi$ range, so the next
+optimisation target is clear. The MPI parameter-sweep mode is deferred
+to M4 as planned.
+
+\section{CUDA kernels}
+The two-site update factorises into a tensor contraction
+$\Theta'_{(v_L,i'j',v_R)} = \sum_{ij} G_{(i'j'),(ij)}\,\Theta_{(v_L,ij,v_R)}$,
+an SVD $\Theta'_{(\chi_L d)\times(d\chi_R)} = U\Sigma V^{H}$, and a
+Vidal-form restore. Table~\ref{tab:kernels} summarises the GPU
+implementation of each piece.
+
+\begin{table}[h]
+\centering
+\caption{GPU \texttt{update\_bond} pipeline. Grid/block shapes are for
+$d{=}2$; $m=\chi_L d$, $n=d\chi_R$, $K=\min(m,n)$.}
+\label{tab:kernels}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}c l l l l@{}}
+\toprule
+\# & stage & GPU implementation & grid $\times$ block & feature \\
+\midrule
+1 & gate contraction
+  & \texttt{gate\_contract\_kernel<2>}
+  & $(\lceil\chi_R/32\rceil, d^2, \chi_L)\!\times\!(32, d^2)$
+  & shared-mem $G$, \texttt{\#pragma unroll}\\
+2 & row $\to$ col layout
+  & \texttt{row\_to\_col\_kernel}
+  & $(\lceil n/32\rceil, \lceil m/8\rceil)\!\times\!(32,8)$
+  & coalesced reads \\
+3 & SVD
+  & \texttt{cusolverDnZgesvdj} (\texttt{econ=1})
+  & library
+  & Jacobi, $K{=}\min(m,n)$ \\
+4 & Vidal restore left
+  & \texttt{vidal\_restore\_left\_kernel<2>}
+  & $(\lceil\mathrm{keep}/64\rceil, \chi_L)\!\times\!(64, d)$
+  & elementwise; $1/\Lambda$ host-side \\
+5 & Vidal restore right
+  & \texttt{vidal\_restore\_right\_kernel<2>}
+  & $(\lceil\chi_R/64\rceil, \mathrm{keep})\!\times\!(64, d)$
+  & in-place conj.\ of $V$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Why Jacobi for the SVD.} Per-bond matrices stay in the $50$--$200$
+range, below the threshold where QR-based \texttt{gesvd} pays back its
+preprocessing cost. Jacobi also matches the M2 CPU baseline, making the
+correctness comparison meaningful: the two SVDs converge to the same
+singular values up to per-column phases (Sec.~\ref{sec:correct}).
+
+\textbf{Persistent workspace.}
+\texttt{GpuTebdWorkspace} pre-allocates every device buffer at engine
+construction, including $d\_\Theta$, $d\_U$, $d\_V$, $d\_S$, the cuSOLVER
+\texttt{lwork} scratch, and the cuSOLVER + cuBLAS handles. We also keep
+pinned host staging buffers for $\Theta$, $B^{\text{new}}$, and the
+singular-value array, so every per-bond H2D/D2H is asynchronous. One
+$\mathtt{cudaDeviceSynchronize}$ closes the bond.
+
+\textbf{Optimisations.} (i) pinned host buffers
+(\texttt{cudaMallocHost}); (ii) cooperative shared-memory load of the
+$16$-element gate via a strided loop, replacing an
+\texttt{if(tid<16)} guard that silently broke when blocks had $<\!16$
+threads; (iii) re-query
+\texttt{cusolverDnZgesvdj\_bufferSize} per call because cuSOLVER's
+\texttt{lwork} is non-monotone in $(m,n)$ -- caught via
+\texttt{compute-sanitizer} (Sec.~\ref{sec:challenges}).
+
+\textbf{Not yet applied.} Persistent device MPS (no per-bond H2D/D2H);
+stream-level parallelism over non-overlapping bonds in one Trotter
+sub-step; a hand-rolled CUDA Jacobi SVD specialised to small complex
+matrices (target for replacing the cuSOLVER bottleneck shown in
+Fig.~\ref{fig:break}).
+
+\section{C++ wrapper and CPU code}
+The host driver from M2 is unchanged. \texttt{tebd\_step\_gpu(eng, ws)}
+mirrors \texttt{TEBDEngine::step()} but routes each
+\texttt{update\_bond} through the GPU. The host MPS keeps the
+pre-allocated $\chi_\text{max}\cdot d\cdot\chi_\text{max}$ capacity from
+M2 so no \texttt{new}/\texttt{delete} happens in the inner loop
+except for the small Schmidt-value arrays (size $\le\chi_\text{max}$,
+which we will eliminate once the MPS itself lives on the device).
+
+\textbf{CPU reference.} \texttt{tebd.cpp} and \texttt{exact\_diag.cpp}
+from M2: hand-written one-sided Jacobi SVD for TEBD; full $2^L{\times}2^L$
+state-vector evolution under
+$U_{\Delta t}=\operatorname{expm}(-i\Delta t\,H)$ for the ED oracle.
+
+\section{Correctness testing}\label{sec:correct}
+The six Google\,Test binaries from M2 still pass at the same tolerances
+($10^{-12}$ exact ops, $10^{-10}$ SVD-dependent). The new
+\texttt{validate\_gpu} driver runs CPU and GPU \texttt{TEBDEngine}s
+side-by-side from the same product state and compares
+$\langle\sigma^z_i\rangle$, $\langle\sigma^x_i\rangle$, and the $L{-}1$
+bipartite von-Neumann entropies at every Trotter step.
+
+\begin{table}[h]
+\centering
+\caption{CPU vs.\ GPU agreement on the TFI quench
+($J{=}g{=}1$, dt$=0.05$, order~2, product state $|{\uparrow}\cdots\rangle$).
+Reported error is
+$\max_t \max_i\{|dS^z_i|, |dS^x_i|, |dS_b|\}$ across all Trotter steps.}
+\label{tab:correct}
+\small
+\begin{tabular}{@{}rrrlc@{}}
+\toprule
+$L$ & $\chi_{\max}$ & steps & max obs.\ error & result \\
+\midrule
+ 8 & 32 & 30 & $2.4\times10^{-14}$ & \textsc{pass}\\
+12 & 32 & 30 & $3.9\times10^{-13}$ & \textsc{pass}\\
+16 & 32 & 30 & $8.2\times10^{-13}$ & \textsc{pass}\\
+16 & 64 & 30 & $9.0\times10^{-13}$ & \textsc{pass}\\
+20 & 64 & 30 & $1.1\times10^{-12}$ & \textsc{pass}\\
+16 & 96 & 20 & $1.9\times10^{-13}$ & \textsc{pass}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The errors are at the floor of two distinct SVD methods on the same
+input -- the CPU's one-sided Jacobi and cuSOLVER's \texttt{gesvdj} agree
+on the singular values to $\sim\!10^{-14}$ in the single-bond unit
+test, and the residual $\mathcal{O}(\epsilon_\text{trunc})$ growth in
+Table~\ref{tab:correct} is consistent with truncation noise compounding
+over $\sim\!400$--$900$ bond updates. \textbf{ED oracle:}
+re-running \texttt{validate\_tebd\_vs\_ed} (the M2 test) with the GPU
+bond update at $L{=}8$, $\chi_\text{max}{=}64$, order~4 gives
+$\max|S^z_\text{TEBD}{-}S^z_\text{ED}|=1.4{\times}10^{-10}$ and
+fidelity drop $<\!10^{-9}$, matching the M2 CPU numbers to within the
+Trotter floor.
+
+\section{Preliminary performance analysis}
+\textbf{Hardware:} NVIDIA RTX~5090 (sm\_120, 32\,GB) vs.\ one AMD~EPYC
+host core. CPU baseline built with \texttt{g++ -O2 -std=c++14}; CUDA
+build uses \texttt{nvcc} 12.9 / cuSOLVER 12.9.
+
+\begin{figure}[!ht]
+  \centering
+  \includegraphics[width=0.98\textwidth]{bench_M3.png}
+  \caption{(a)~Wall-clock time for 15 TEBD steps at $\chi_\text{max}{=}64$
+  vs.\ chain length $L$: the slope of the GPU line is
+  $\approx 0.57\,\text{s}/L$, i.e.\ $\sim\!1.3$\,ms per bond, set by the
+  H2D/D2H round-trip and the cuSOLVER launch.
+  (b)~Per-call cost of \texttt{update\_bond} as $\chi$ grows, on a
+  randomly-initialised $L{=}16$ state. CPU and GPU cross around
+  $\chi{\approx}96{-}128$; the CPU spike at $\chi{=}128$ is one-sided
+  Jacobi taking more sweeps to converge.}
+  \label{fig:bench}
+\end{figure}
+
+\begin{figure}[!ht]
+  \centering
+  \includegraphics[width=0.98\textwidth]{breakdown.png}
+  \caption{Per-stage GPU cost of one \texttt{update\_bond\_gpu} call vs.\
+  $\chi$ on the same synthetic state as Fig.~\ref{fig:bench}\,b.
+  (a)~Log--log of each stage's time. (b)~Share of total time spent in
+  cuSOLVER \texttt{gesvdj}. The SVD is $\ge\!99.3\%$ of the per-bond
+  cost at every $\chi$ we tested; the four custom kernels and the
+  PCIe traffic together account for $<\!1\%$.}
+  \label{fig:break}
+\end{figure}
+
+\textbf{Quench wall-clock at $\chi_\text{max}{=}64$, dt$=0.1$, order~2,
+$N_\text{step}{=}15$:}
+
+\begin{center}\small
+\begin{tabular}{@{}rrrrr@{}}
+\toprule
+$L$ & $t_\text{CPU}$ [s] & $t_\text{GPU}$ [s] & GPU/CPU & realised $\chi(t)$ \\
+\midrule
+12 & 0.038 & 1.28 & 33.4 & 40 \\
+20 & 0.240 & 6.25 & 26.0 & 41 \\
+28 & 0.454 & 11.78 & 25.9 & 41 \\
+40 & 0.766 & 19.39 & 25.3 & 41 \\
+60 & 1.301 & 32.85 & 25.2 & 41 \\
+80 & 1.850 & 45.44 & 24.6 & 41 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Reading the numbers.} (1) At $\chi_\text{max}{=}64$ the realised
+bond dimension never exceeds $41$, so every SVD is small and the GPU is
+\emph{latency}-bound: PCIe round-trip + cuSOLVER launch dominates.
+(2) Fig.~\ref{fig:bench}\,b: when the matrix grows -- forcing
+\texttt{gesvdj} to actually do work -- the GPU crosses the CPU near
+$\chi{\approx}96$ and reaches $5.4\times$ at $\chi{=}128$. The
+asymptotic $\mathcal{O}(\chi^3)$ kicks in. (3) Fig.~\ref{fig:break}:
+\texttt{gesvdj} is 99.3--99.99\,\% of the per-bond cost at every
+$\chi$; the four custom kernels are small enough to be invisible. The
+gate kernel is well under 50\,$\mu$s, far from the FP64 peak
+($\sim$\,1\,TFLOP/s on RTX~5090) -- it's launch-bound, not compute-bound.
+(4) Compute-bound vs.\ memory-bound vs.\ latency-bound: at TFI-relevant
+$\chi_\text{max}{=}64$, this implementation is \emph{latency-bound};
+at $\chi{>}100$, it tips into being compute-bound and dominated by
+\texttt{gesvdj}'s iterative work.
+
+\section{Challenges and next steps}\label{sec:challenges}
+\textbf{Resolved.}
+\begin{itemize}
+  \item cuSOLVER's row/column-major convention plus its choice to
+  return $V$ rather than $V^{H}$ caused a silent gauge bug that
+  diverged after the first TEBD step. Fix: explicit row$\to$column
+  transpose before \texttt{gesvdj}, and conjugate inside
+  \texttt{vidal\_restore\_right\_kernel}.
+  \item The initial gate-to-shared-memory load used
+  \texttt{if (tid<16) sgate[tid]=...}, which silently zero-padded the
+  gate when a block had $<\!16$ threads (small $\chi_R$). A strided
+  cooperative loop replaces the guard.
+  \item A non-monotonicity in \texttt{gesvdj\_bufferSize} caused an
+  out-of-bounds write inside cuSOLVER's QR pre-pass at long-step
+  validation runs; caught via \texttt{compute-sanitizer}, fixed by
+  re-querying \texttt{lwork} per call.
+\end{itemize}
+
+\textbf{Remaining for M4.}
+\begin{itemize}
+  \item \emph{Persistent device MPS}: keep $B_s$ and $\Lambda_s$ on the
+  device and eliminate the H2D/D2H in the inner loop except for
+  periodic observable read-outs. This should move
+  Fig.~\ref{fig:bench}\,a into the same regime as
+  Fig.~\ref{fig:bench}\,b.
+  \item \emph{Streams within a sub-step}: even and odd bonds within one
+  Trotter substep are independent, so $\lceil(L{-}1)/2\rceil$ updates
+  can run on separate streams.
+  \item \emph{Custom Jacobi-SVD kernel for $50{-}200$ complex matrices},
+  replacing the dominant \texttt{cusolverDnZgesvdj} call shown in
+  Fig.~\ref{fig:break}.
+  \item \emph{MPI parameter sweep}: distribute over $(J, g)$,
+  $\chi_\text{max}$, or $dt$ across multiple GPUs;
+  embarrassingly-parallel weak scaling (M2 plan unchanged).
+\end{itemize}
+
+\textbf{Updated timeline.} Persistent-device MPS + streams by May~18;
+MPI parameter sweep + weak scaling by May~22; M4 scaling benchmarks
+(strong if spatial decomposition lands, weak otherwise) by May~25;
+M4 report May~27.
+
+\end{document}
