@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
   }
 
   std::printf("chi_max,N_steps,t_cusolver_s,t_jacobi_s,ratio,max_err\n");
-  for (int chi_max : {16, 32, 48, 64, 96, 128}) {
+  for (int chi_max : {16, 32, 48, 64, 96, 128, 192, 256}) {
     run_config(L, chi_max, /*N_steps=*/20, /*csv=*/true);
   }
   return 0;

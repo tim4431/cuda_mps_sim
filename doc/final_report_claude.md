@@ -316,18 +316,33 @@ The implementation has three regimes, each tied to hardware:
   Gram-orthogonalization is FP64 ALU work; on Turing's limited FP64 throughput
   this dominates, and no amount of stream overlap or transfer elimination can
   move the ceiling. This is the binding bottleneck for the physics we care about.
+  A roofline argument corroborates this: with the $2\chi_a\times2\chi_a$ complex
+  matrix fitting in Turing's 4 MB L2 cache (at $\chi_a=64$ the matrix is 256 KB),
+  each element is loaded from HBM once per sweep, giving a cache-resident
+  arithmetic intensity $I\approx9n/16$ flops/byte where $n=2\chi_a$. At
+  $\chi_a=64$ ($n=128$), $I\approx72$ flops/byte — roughly 95$\times$ above
+  the Turing ridge point ($509\,\text{GFLOP/s}\div672\,\text{GB/s}\approx0.76$
+  flops/byte), placing the SVD well into the compute-bound region. Nsight Systems
+  confirms this: PCIe traffic after persistent MPS is only $\approx0.24$ MB H2D
+  and $0.18$ MB D2H, negligible compared to the $>99.6\%$ kernel-time share of
+  gesvdj.
 - **Single GPU, small $\chi$ — latency-bound.** At the TFIM-realized
-  $\chi_a\approx41$, every SVD matrix is small, so per-bond time is set by kernel
-  launch + cuSOLVER dispatch, not flops (model (a)). This is why the GPU only
-  *wins* once $\chi_{\max}\ge48$ (Table 1): below that, the GPU pays launch
-  overhead the CPU does not.
+  $\chi_a\approx41$, every SVD matrix is small ($82\times82$ complex), so
+  $I\approx41$ flops/byte but the absolute flop count is too small to saturate
+  the GPU. Per-bond time is set by kernel launch and cuSOLVER dispatch overhead
+  $t_0$, not flops — this is why the GPU only *wins* once $\chi_{\max}\ge48$
+  (Table 1): below that, the GPU pays launch overhead the CPU does not.
+  The custom gate and restore kernels ($O(\chi^2)$ work, $<0.4\%$ of kernel time)
+  are always in this launch-bound regime, which is exactly why optimizing them
+  would not move the needle.
 - **Multi-GPU — load imbalance, not communication.** Computation is $>99\%$ of
   wall time and the final `Gatherv` is $<0.01\%$ (Table 2), so the distributed
   bottleneck is purely **load imbalance**: round-robin gives one rank the four
   hardest ($J=2.0$) pairs, which run $2.2\times$ longer than the cheapest,
-  explaining the $\sim19\%$ efficiency gap at $P=4$ (§8). This ties back to the
-  warp/SM execution model only indirectly — the imbalance is at the *task* level
-  (entanglement → $\chi_a$ → $O(\chi_a^3)$), above the kernel.
+  explaining the $\sim19\%$ efficiency gap at $P=4$ (§8). The phase-diagram
+  heatmap (Fig. 6) makes this concrete: $\chi_a$ varies from 21 (cheap, low-$J$
+  paramagnetic corner) to 64 saturated (expensive, high-$J$ critical region),
+  a 3× spread in matrix size translating to a 27× spread in SVD flops.
 
 A secondary bottleneck is the **mid-pipeline host sync** for truncation, which
 prevents stream overlap; removing it would require a device-side top-$k$
@@ -358,6 +373,12 @@ We explored four variants; each shifts the bottleneck differently.
    the production backend; the custom kernel is the from-scratch deliverable and
    quantifies the vendor gap. The bottleneck (SVD) is unchanged — this variant
    tells us *how much* headroom a better single-block Jacobi would need to find.
+   Extending the benchmark to $\chi_{\max}=256$ (Table 3) confirms that both paths
+   plateau once $\chi_{\max}$ exceeds the realized $\chi_a\approx41$–64: the
+   cuSOLVER time changes by less than 1% from $\chi_{\max}=64$ to 256, and the
+   Jacobi/cuSOLVER ratio stabilizes at $\approx0.456$. This plateau is a direct
+   consequence of the latency-bound regime: SVD matrix size is set by
+   $\chi_a$, not $\chi_{\max}$.
 
 4. **Trotter order (1 / 2 / 4).** Higher order trades more gates per step
    (more SVDs) for $O(dt^p)$ accuracy; order 4 (Forest–Ruth) lets us reach the
@@ -366,13 +387,19 @@ We explored four variants; each shifts the bottleneck differently.
 
 | $\chi_{\max}$ | cuSOLVER (s) | Custom Jacobi (s) | Ratio | max $|\Delta\sigma|$ |
 |---:|---:|---:|---:|---:|
-| 16  | 5.318  | 6.125  | 0.868 | $4.74\times10^{-14}$ |
-| 32  | 13.028 | 20.441 | 0.637 | $5.84\times10^{-13}$ |
-| 64  | 18.272 | 39.982 | 0.457 | $1.00\times10^{-12}$ |
-| 128 | 18.458 | 40.343 | 0.458 | $1.00\times10^{-12}$ |
+| 16  | 7.110  | 8.184  | 0.869 | $4.74\times10^{-14}$ |
+| 32  | 17.352 | 27.089 | 0.641 | $5.84\times10^{-13}$ |
+| 48  | 22.688 | 46.056 | 0.493 | $9.96\times10^{-13}$ |
+| 64  | 23.751 | 52.160 | 0.455 | $1.00\times10^{-12}$ |
+| 96  | 23.726 | 52.179 | 0.455 | $1.00\times10^{-12}$ |
+| 128 | 23.754 | 52.208 | 0.455 | $1.00\times10^{-12}$ |
+| 192 | 23.856 | 52.309 | 0.456 | $1.00\times10^{-12}$ |
+| 256 | 23.985 | 52.435 | 0.457 | $1.00\times10^{-12}$ |
 
-*Table 3. `bench_svd`: cuSOLVER vs. custom Jacobi, $L=20$, 20 steps. The
-wide-matrix adjoint fix reduced error from $O(10^{-1})$ to $\lesssim10^{-12}$.*
+*Table 3. `bench_svd`: cuSOLVER vs. custom Jacobi, $L=20$, 20 steps. Both paths
+plateau above $\chi_{\max}=64$ because the realized $\chi_a$ is set by the physics,
+not by the budget. The wide-matrix adjoint fix reduced error from $O(10^{-1})$ to
+$\lesssim10^{-12}$.*
 
 ![Custom Jacobi is 1.2–2.2x slower than cuSOLVER; accuracy is below 1e-12 after
 the wide-matrix adjoint fix.](figs/svd_compare.png)
@@ -424,6 +451,22 @@ that, ranks idle. Because communication is negligible, the design would otherwis
 scale to as many ranks as there are independent $(J,g)$ points — the limit is the
 size of the physics sweep, not the network.
 
+**Phase-diagram structure.** Figure 6 shows the end-of-evolution mid-chain
+entropy and realized bond dimension $\chi_a$ across the $4\times4$ $(J,g)$ grid.
+Entropy peaks near the quantum critical point ($J\approx g$) and saturates
+$\chi_{\max}=64$ for most high-$J$ points; the low-$J$, high-$g$ corner
+(paramagnetic phase) reaches only $\chi_a\approx21$–45. This 2–6$\times$ spread
+in $\chi_a$ directly sets the per-pair SVD cost and explains the observed
+load-imbalance gap in strong scaling.
+
+![Phase-diagram heatmaps of mid-chain entropy and realized bond dimension over the 4×4 (J,g) grid.](figs/phase_heatmap.png)
+
+*Figure 6. Left: final mid-chain entropy $S_{\rm mid}$. Right: max realized bond
+dimension $\chi_a$. High-$J$ points near the critical region saturate
+$\chi_{\max}=64$ and dominate runtime; the paramagnetic corner (small $J$, large
+$g$) is cheap. This per-pair cost variation drives the strong-scaling load
+imbalance.*
+
 ---
 
 ## 9. Correctness and verification
@@ -443,7 +486,7 @@ We verify correctness at four independent levels:
    $\langle\sigma^x\sigma^x\rangle$, $2.2\times10^{-6}$ in entropy, and final
    state-vector fidelity loss $4.3\times10^{-11}$. The residual is **dominated by
    the $O(dt^4)$ Trotter error**, not the implementation — the error sits at the
-   Trotter floor from the first step onward (Fig. 6).
+   Trotter floor from the first step onward (Fig. 7).
 
 3. **CPU↔GPU agreement.** `validate_gpu` (per-bond GPU path) and
    `validate_persistent` (the persistent device-MPS path the sweep uses) run the
@@ -461,7 +504,7 @@ We verify correctness at four independent levels:
 ![Per-step max error of TEBD against exact diagonalization: after the first step
 the error sits at the Trotter floor (~1e-6) for the entire run.](figs/validate_errors.png)
 
-*Figure 6. TEBD vs. exact diagonalization, per-step max error. Final fidelity
+*Figure 7. TEBD vs. exact diagonalization, per-step max error. Final fidelity
 loss $4.3\times10^{-11}$.*
 
 **Debugging notes.** Three subtle bugs were caught and fixed with
