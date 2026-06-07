@@ -3,10 +3,11 @@
 // Each MPI rank builds its own (J, g) parameter pairs locally (no scatter) and
 // runs an independent GPU TEBD evolution.  Zero in-loop MPI communication; the
 // only exchange is a final result gather: MPI_Gather of per-rank record counts
-// followed by MPI_Gatherv of the (J, g, t_wall, max_chi, entropy) records.
+// followed by MPI_Gatherv of the flattened result records.
 //
 // CSV output to stdout (rank 0 only):
-//   rank,J,g,L,chi_max,N_steps,t_wall_s,max_chi,final_entropy
+//   rank,J,g,L,chi_max,N_steps,t_wall_s,max_chi,final_entropy,
+//   sz_0,...,sz_{L-1},sx_0,...,sx_{L-1},xx_00,...,xx_{L-1,L-1}
 //
 // Usage:
 //   mpirun -n <P> ./sweep_mpi [options]
@@ -39,6 +40,7 @@
 #include "model.h"
 #include "mps.h"
 #include "tebd.h"
+#include "tensor.h"
 
 using clk = std::chrono::high_resolution_clock;
 static double elapsed_sec(clk::time_point t0) {
@@ -86,7 +88,10 @@ struct RunResult {
   double J, g;
   double t_wall_s;
   int    max_chi;
-  double final_entropy;  // mid-chain entropy at the end
+  double final_entropy;          // mid-chain entropy at the end
+  std::vector<double> sz_vals;   // <sigma^z_i>, length L
+  std::vector<double> sx_vals;   // <sigma^x_i>, length L
+  std::vector<double> xx_corr;   // <sigma^x_i sigma^x_j>, length L*L
 };
 
 static RunResult run_param(double J, double g,
@@ -158,6 +163,16 @@ static RunResult run_param(double J, double g,
   psi.entropy(ent.data());
   res.final_entropy = ent[(L - 1) / 2];
 
+  // Single-site and two-point observables (CPU-side on the synced MPS).
+  static const Cdouble sz_op[4] = {{1,0},{0,0},{0,0},{-1,0}};
+  static const Cdouble sx_op[4] = {{0,0},{1,0},{1,0},{0,0}};
+  res.sz_vals.resize(L);
+  res.sx_vals.resize(L);
+  res.xx_corr.resize(L * L);
+  psi.expect(sz_op, res.sz_vals.data());
+  psi.expect(sx_op, res.sx_vals.data());
+  psi.corr(sx_op, sx_op, res.xx_corr.data());
+
   return res;
 }
 
@@ -218,9 +233,9 @@ int main(int argc, char** argv) {
     my_results.push_back(run_param(p.J, p.g, L, chi_max, dt,
                                    N_steps, order, n_streams));
 
-  // Flatten results for MPI_Gather.
-  // Each result contributes 5 doubles: J, g, t_wall_s, max_chi, entropy.
-  const int FIELDS = 5;
+  // Flatten results for MPI_Gatherv.
+  // Each result: 5 scalars + L sz + L sx + L*L xx_corr doubles.
+  const int FIELDS = 5 + L + L + L * L;
   std::vector<double> send_buf;
   send_buf.reserve(my_results.size() * FIELDS);
   for (const auto& r : my_results) {
@@ -229,6 +244,9 @@ int main(int argc, char** argv) {
     send_buf.push_back(r.t_wall_s);
     send_buf.push_back(double(r.max_chi));
     send_buf.push_back(r.final_entropy);
+    for (double v : r.sz_vals)  send_buf.push_back(v);
+    for (double v : r.sx_vals)  send_buf.push_back(v);
+    for (double v : r.xx_corr)  send_buf.push_back(v);
   }
   int my_count = (int)send_buf.size();
 
@@ -251,12 +269,16 @@ int main(int argc, char** argv) {
 
   // Rank 0: print CSV and scaling summary.
   if (rank == 0) {
-    std::printf("rank,J,g,L,chi_max,N_steps,t_wall_s,max_chi,final_entropy\n");
+    // Header: scalars then sz_0..sz_{L-1}, sx_0..sx_{L-1}, xx_00..xx_{L-1,L-1}
+    std::printf("rank,J,g,L,chi_max,N_steps,t_wall_s,max_chi,final_entropy");
+    for (int i = 0; i < L; ++i) std::printf(",sz_%d", i);
+    for (int i = 0; i < L; ++i) std::printf(",sx_%d", i);
+    for (int i = 0; i < L; ++i)
+      for (int j = 0; j < L; ++j) std::printf(",xx_%d_%d", i, j);
+    std::printf("\n");
+
     int n_total = (int)recv_buf.size() / FIELDS;
 
-    // displs/counts give each rank's contiguous slice of the gathered buffer,
-    // so every record can be attributed to its source rank and the per-rank
-    // wall time summed.
     std::vector<double> rank_total(n_ranks, 0.0);
     int src = 0;
     for (int i = 0; i < n_total; ++i) {
@@ -268,8 +290,12 @@ int main(int argc, char** argv) {
       int    mc  = int(recv_buf[elem + 3]);
       double ent = recv_buf[elem + 4];
       rank_total[src] += tw;
-      std::printf("%d,%.2f,%.2f,%d,%d,%d,%.6f,%d,%.6f\n",
+      std::printf("%d,%.2f,%.2f,%d,%d,%d,%.6f,%d,%.6f",
                   src, J, g, L, chi_max, N_steps, tw, mc, ent);
+      // sz, sx, xx_corr
+      for (int k = 0; k < L + L + L*L; ++k)
+        std::printf(",%.8f", recv_buf[elem + 5 + k]);
+      std::printf("\n");
     }
 
     // Scaling metrics:
