@@ -37,47 +37,49 @@
 %% -------------------------------------------------------------------------
 \section{Project description}
 
-We simulate the \textbf{real-time quench dynamics} of the one-dimensional transverse-field Ising model (TFIM), a canonical quantum many-body system,
+We simulate the \textbf{real-time quench dynamics} of the one-dimensional transverse-field Ising model (TFIM), a canonical quantum many-body system, with the Hamiltonian described as:
 \begin{equation}
   H = -J\sum_i \sigma^x_i\sigma^x_{i+1} \;-\; g\sum_i \sigma^z_i .
 \end{equation}
 A chain of $L$ spin-$\tfrac{1}{2}$ sites lives in a Hilbert space of dimension $2^L$, so storing the wavefunction exactly is impossible beyond $L\approx30$. The key physical fact that makes simulation tractable is that low-energy and short-time states of 1D local Hamiltonians have \textit{bounded entanglement}, and can be compressed into a \textit{Matrix Product State (MPS)}: the $2^L$ amplitudes are factored into $L$ small rank-3 tensors connected by \emph{bond} indices of dimension $\chi$. The MPS stores only $O(L\chi^2 d)$ numbers ($d=2$), where $\chi$ grows with the entanglement across each cut.
 
+
 \textbf{Computation.} We evolve the state with \textit{Time-Evolving Block Decimation
 (TEBD)}: the propagator $e^{-iHt}$ is Suzuki--Trotter split into nearest-neighbour two-site gates $U_b=e^{-i\,\Delta t\,H_b}$, and each Trotter step applies $L-1$ gates. Applying one gate is one small complex SVD that re-compresses the two-site tensor back to bond dimension $\chi$; this SVD takes $>99.6\%$ of GPU kernel time and is the target of all parallel work here.
 
 \begin{itemize}
-\item \textbf{Inputs:} chain length $L$; couplings $(J,g)$; an initial product state;   Trotter step $dt$; number of steps $N$; max bond dimension $\chi_{\max}$;   Trotter order (1, 2, or 4).
-\item \textbf{Outputs:} time series of site magnetizations $\langle\sigma^z_i\rangle$,  $\langle\sigma^x_i\rangle$, two-point correlations $\langle\sigma^x_i\sigma^x_j\rangle$, the bipartite von-Neumann entanglement entropy on every cut, the bond-dimension profile $\chi(t)$, and the accumulated SVD truncation error.
-\item \textbf{Assumptions/simplifications:} open boundary conditions, local dimension $d=2$, nearest-neighbour bonds only.
+\item \textbf{Inputs:} chain length $L$; couplings $(J,g)$; an initial product state;   Trotter step $dt$; number of steps $N$; max bond dimension $\chi_{\max}$.
+\item \textbf{Outputs:} mean field magnetizations $\langle\sigma^z_i\rangle$,  $\langle\sigma^x_i\rangle$, two-point correlations $\langle\sigma^x_i\sigma^x_j\rangle$, the bipartite von-Neumann entanglement entropy, and the bond-dimension profile $\chi(t)$.
+\item \textbf{Assumptions:} open boundary conditions, local dimension $d=2$.
 \end{itemize}
 
-\textbf{Why this matters, and why parallelism.} Entanglement grows under a quench, so $\chi(t)$ climbs over time (Fig.~\ref{fig:summary}) until it saturates $\chi_{\max}$. Each bond update requires a small dense SVD whose cost scales roughly as $O(\chi^3)$, so doubling the effective bond dimension gives an $8\times$ increase in work and a $(J,g)$ phase-diagram sweep quickly becomes expensive. On a single GPU, each bond update runs as device kernels: our CUDA kernels handle the gate contraction, layout conversion, and reconstruction of the MPS tensors around the SVD, while cuSOLVER performs the SVD in the production path. Across GPUs we use task parallelism: each MPI rank owns one GPU and runs independent TEBD evolutions for different $(J,g)$ points, with no communication inside the time-stepping loop. This matches the structure of the parameter sweep and turns many independent simulations into a shorter wall-clock study.
+\textbf{Why parallelism.} Entanglement grows under a quench, so $\chi(t)$ climbs over time (Fig.~\ref{fig:summary}) until it saturates $\chi_{\max}$. Each bond update requires a small dense SVD whose cost scales roughly as $O(\chi^3)$, so doubling the effective bond dimension gives an $8\times$ increase in work. On a single GPU, each bond update runs as device kernels: our CUDA kernels handle the gate contraction, layout conversion, and reconstruction of the MPS tensors around the SVD, while cuSOLVER performs the SVD in the production path.
+
+Across GPUs we use task parallelism: each MPI rank owns one GPU and runs independent TEBD evolutions for different $(J,g)$ points. This matches the structure of the parameter sweep and turns many independent simulations into a shorter wall-clock study.
 
 %% -------------------------------------------------------------------------
 \section{Algorithms and state of the art}
 
-\textbf{Core algorithm.} We implement TEBD on a \textit{right-canonical MPS} in Vidal form, standard for real-time evolution because it keeps the Schmidt spectrum $\Lambda$ explicit on every bond and makes truncation locally optimal in the 2-norm. The two-site update is:
-(1) contract the gate with the two-site tensor $\Theta$;
+\textbf{Core algorithm.} We implement TEBD on a \textit{right-canonical MPS} in Vidal form. The two-site update is:
+(1) contract the gate with the two-site tensor;
 (2) SVD the reshaped $(\chi_L d)\times(d\chi_R)$ matrix;
 (3) truncate to the largest $\chi_{\max}$ singular values and renormalize;
-(4) restore MPS form. The Trotter layer supports orders 1, 2 (symmetric), and 4 (Forest--Ruth), so the user can trade gate count for $O(dt^p)$ accuracy.
+(4) restore MPS form.
 
 \textbf{State of the art.}
 Mature libraries (\textit{TeNPy}, \textit{ITensor}, \textit{quimb}, \textit{TensorNetwork}) are CPU/Python-centric and general; on GPUs, NVIDIA's \textit{cuTensorNet} (cuQuantum) offers library-level batched contraction and SVD. The algorithmic variants relevant to our problem are the SVD engine, the time integrator (Trotter--Suzuki), and the parallel decomposition.
 
 \textbf{Our choice and how it compares.} We do \textit{not} try to beat cuTensorNet on throughput. Instead we build an instrumented TEBD that times each kernel separately, so we can attribute time to gate contraction, SVD, truncation, and PCIe traffic rather than have a library hide it.
-For the SVD we chose \textit{one-sided Jacobi}: at our matrix sizes ($2\chi \lesssim 256$) it converges in 5 - 10 sweeps and avoids the QR preprocessing that \code{gesvd} only amortizes on large matrices. We implement it two ways: a complete from-scratch CUDA one-sided Jacobi (our computationally intensive hand-written kernel, \code{jacobi\_sweep}/\code{jacobi\_finish}) and the production path through cuSOLVER's \code{gesvdj} as a tuned-library baseline; running both quantifies the gap to the standard library directly (\S7).
+% For the SVD we chose \textit{one-sided Jacobi}: at our matrix sizes ($2\chi \lesssim 256$) it converges in 5 - 10 sweeps and avoids the QR preprocessing that \code{gesvd} only amortizes on large matrices. We implement it two ways: a complete from-scratch CUDA one-sided Jacobi (our computationally intensive hand-written kernel, \code{jacobi\_sweep}/\code{jacobi\_finish}) and the production path through cuSOLVER's \code{gesvdj} as a tuned-library baseline; running both quantifies the gap to the standard library directly (\S7).
 
 %% -------------------------------------------------------------------------
 \section{Parallelization strategy (CUDA + MPI)}
 
 \subsection{The central difficulty and the decomposition we chose}
 
-A single TEBD chain has \textit{limited spatial parallelism}. Within one Trotter sub-step the even bonds $\{0,2,4,\dots\}$ and odd bonds $\{1,3,5,\dots\}$ touch disjoint tensors and are independent ($\sim(L-1)/2$-way), but the even and odd sub-steps are \emph{sequential}, and a spatial decomposition that splits the chain across ranks would require one MPI round-trip per sub-step to exchange the
-boundary Schmidt spectrum. We benchmark up to $L=80$, a study-scope choice (short runs), not a memory limit (the MPS holds only $O(L\chi^2d)$ numbers, tens of MB); the per-step compute is far too small to hide that latency.
+A single TEBD chain has \textit{limited spatial parallelism}. Within one Trotter sub-step the even bonds $\{0,2,4,\dots\}$ and odd bonds $\{1,3,5,\dots\}$ touch disjoint tensors and are independent ($\sim(L-1)/2$-way), but the even and odd sub-steps are \emph{sequential}, and a spatial decomposition that splits the chain across ranks would require one MPI round-trip per sub-step to exchange the boundary Schmidt spectrum. We benchmark up to $L=80$ and found that the per-step compute is far too small to hide that latency.
 
-We therefore use \textit{task parallelism}: each MPI rank owns one GPU and runs complete, independent TEBD evolutions for a set of $(J,g)$ points in the phase diagram, with zero in-loop communication, as production parameter studies do. We rejected two alternatives: (a) spatial chain decomposition, infeasible at small $L$ due to per-sub-step synchronization; (b) replicated-parameter plus distributed chain, which needs per-bond MPI barriers.
+We therefore use \textit{task parallelism}: each MPI rank owns one GPU and runs complete, independent TEBD evolutions for a set of $(J,g)$ points in the phase diagram, with zero in-loop communication. We rejected two alternatives: (a) spatial chain decomposition, infeasible at small $L$ due to per-sub-step synchronization; (b) replicated-parameter plus distributed chain, which needs per-bond MPI barriers.
 
 \subsection{Single-GPU bond-update pipeline}
 
@@ -103,8 +105,10 @@ Every stage is bracketed by CUDA events so \code{bench\_breakdown} can report pe
 \subsection{Persistent device-resident MPS and streams}
 
 \begin{itemize}
-\item \textbf{Persistent device MPS (\code{GpuMps}).} All $L$ B-tensors and Schmidt spectra stay device-resident for the whole evolution, dropping profiled H2D/D2H from tens of MB to $\sim0.2$ MB; buffers are pre-allocated once (\code{GpuTebdWorkspace}), so there is zero \code{cudaMalloc} during evolution.
-\item \textbf{Streams within a sub-step.} \code{tebd\_step\_gpu\_persistent} accepts $n$ workspaces with independent CUDA streams and cuSOLVER handles. However, truncation requires a \code{cudaStreamSynchronize} mid-bond (to read singular values host-side), serializing bonds. Measured stream speedup is negligible (Table~1), as the performance model predicts.
+\item \textbf{Persistent device MPS (\code{GpuMps}).} All tensors and Schmidt spectra stay device-resident for the whole evolution
+% dropping profiled H2D/D2H from tens of MB to $\sim0.2$ MB;
+buffers are pre-allocated once (\code{GpuTebdWorkspace}), so there is zero \code{cudaMalloc} during evolution.
+\item \textbf{Streams within a sub-step.} \code{tebd\_step\_gpu\_persistent} accepts $n$ workspaces with independent CUDA streams and cuSOLVER handles. However, truncation requires a \code{cudaStreamSynchronize} mid-bond (to read singular values host-side), serializing bonds. Therefore, measured stream speedup is negligible (see Table~1).
 \end{itemize}
 
 \subsection{MPI decomposition and communication pattern}

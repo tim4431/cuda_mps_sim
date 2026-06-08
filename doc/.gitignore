@@ -1,2 +1,6 @@
 instruction.md
 *.synctex.gz
+*.log
+*.aux
+*.fdb_latexmk
+*.fls
