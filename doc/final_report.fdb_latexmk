@@ -1,7 +1,7 @@
 # Fdb version 4
-["pdflatex"] 1780883644.23737 "/home/chilingh/cme/cuda_mps_sim/doc/final_report.tex" "final_report.pdf" "final_report" 1780883645.05526 0
+["pdflatex"] 1780892422.27455 "/home/chilingh/cme/cuda_mps_sim/doc/final_report.tex" "final_report.pdf" "final_report" 1780892423.10405 0
   "/etc/texmf/web2c/texmf.cnf" 1756080398.57304 475 c0e671620eb5563b2130f56340a5fde8 ""
-  "/home/chilingh/cme/cuda_mps_sim/doc/final_report.tex" 1780883643.18173 28071 0b6d79f2719949efc6cf4530b68abe14 ""
+  "/home/chilingh/cme/cuda_mps_sim/doc/final_report.tex" 1780892422.1187 31193 38fdd3d61f3e8ab00ee75a8288035bc5 ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/jknappen/ec/tcrm1095.tfm" 1136768653 1536 02c06700a42be0f5a28664c7273f82e7 ""
   "/usr/share/texlive/texmf-dist/fonts/tfm/public/amsfonts/cmextra/cmex7.tfm" 1246382020 1004 54797486969f23fa377b128694d548df ""
@@ -127,9 +127,9 @@
   "figs/summary.png" 1779956234.9701 68556 f5d213f1c80d701eef03425d83333c1c ""
   "figs/svd_compare.png" 1780881847.8615 115851 c238481e2e71813ece19092d2722ae2a ""
   "figs/validate_errors.png" 1779956234.9701 52738 20928f40bc1f5699faa267ac7511fd4b ""
-  "final_report.aux" 1780883645.01875 6255 a09c2d24e4b1df3df03994a163a9cfa2 "pdflatex"
-  "final_report.out" 1780883645.01975 3398 968ca126ef0b0313f86df3becf7bfbd2 "pdflatex"
-  "final_report.tex" 1780883643.18173 28071 0b6d79f2719949efc6cf4530b68abe14 ""
+  "final_report.aux" 1780892423.06972 6393 bd392eb7ffea479b7b133ff156cd2a21 "pdflatex"
+  "final_report.out" 1780892423.06972 3648 514d7dea869f45583d9a0321f20a16fd "pdflatex"
+  "final_report.tex" 1780892422.1187 31193 38fdd3d61f3e8ab00ee75a8288035bc5 ""
   (generated)
   "final_report.aux"
   "final_report.log"

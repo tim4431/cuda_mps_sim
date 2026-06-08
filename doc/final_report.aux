@@ -8,13 +8,13 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.1}The central difficulty and the decomposition we chose}{2}{subsection.3.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Single-GPU bond-update pipeline}{2}{subsection.3.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Persistent device-resident MPS and streams}{2}{subsection.3.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}MPI decomposition and communication pattern}{2}{subsection.3.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}MPI decomposition and communication pattern}{3}{subsection.3.4}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {4}Performance model}{3}{section.4}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {5}Benchmarking and instrumentation}{3}{section.5}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {6}Bottleneck analysis}{4}{section.6}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {7}Algorithmic variants and their effect on performance}{4}{section.7}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {8}Scalability analysis}{5}{section.8}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {9}Correctness and verification}{5}{section.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Correctness and verification}{6}{section.9}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {10}Discussion, limitations, and future work}{6}{section.10}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {A}Debugging notes}{8}{appendix.A}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {B}Supplementary figures}{8}{appendix.B}\protected@file@percent }
@@ -23,16 +23,17 @@
 \newlabel{fig:summary}{{1}{8}{Reference $L=20$ TFIM quench ($J=g=1$, order 4, $\chi _{\max }=64$). Entanglement growth drives bond-dimension growth, which sets the SVD sizes that dominate runtime}{figure.caption.1}{}}
 \@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces (a) Wall time vs.\ $L$ at $\chi _{\max }=64$: linear, $\sim 1.3$ ms/bond, latency-bound as predicted. (b) Per-call \texttt  {update\_bond} vs.\ $\chi $: CPU/GPU crossover near $\chi \approx 96$--128.}}{8}{figure.caption.2}\protected@file@percent }
 \newlabel{fig:crossover}{{2}{8}{(a) Wall time vs.\ $L$ at $\chi _{\max }=64$: linear, $\sim 1.3$ ms/bond, latency-bound as predicted. (b) Per-call \code {update\_bond} vs.\ $\chi $: CPU/GPU crossover near $\chi \approx 96$--128}{figure.caption.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {C}Custom-kernel profile (Nsight Compute)}{8}{appendix.C}\protected@file@percent }
 \@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Left: final mid-chain entropy $S_\text  {mid}$. Right: max realized bond dimension $\chi _a$. High-$J$ points saturate $\chi _{\max }=64$ and dominate runtime; the paramagnetic corner (small $J$, large $g$) is cheap.}}{9}{figure.caption.3}\protected@file@percent }
 \newlabel{fig:phase}{{3}{9}{Left: final mid-chain entropy $S_\text {mid}$. Right: max realized bond dimension $\chi _a$. High-$J$ points saturate $\chi _{\max }=64$ and dominate runtime; the paramagnetic corner (small $J$, large $g$) is cheap}{figure.caption.3}{}}
 \@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Single-GPU full-step timing vs.\ $\chi _{\max }$ (companion to Table 1).}}{9}{figure.caption.4}\protected@file@percent }
 \newlabel{fig:gputiming}{{4}{9}{Single-GPU full-step timing vs.\ $\chi _{\max }$ (companion to Table 1)}{figure.caption.4}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Custom Jacobi SVD vs.\ cuSOLVER \texttt  {gesvdj}: time ratio (center) and Schmidt-spectrum error (right). Both plateau above $\chi _{\max }=64$ (companion to Table 3).}}{9}{figure.caption.5}\protected@file@percent }
-\newlabel{fig:svd}{{5}{9}{Custom Jacobi SVD vs.\ cuSOLVER \code {gesvdj}: time ratio (center) and Schmidt-spectrum error (right). Both plateau above $\chi _{\max }=64$ (companion to Table 3)}{figure.caption.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Custom Jacobi SVD vs.\ cuSOLVER \texttt  {gesvdj}: time ratio (center) and Schmidt-spectrum error (right). Both plateau above $\chi _{\max }=64$ (companion to Table 3).}}{10}{figure.caption.5}\protected@file@percent }
+\newlabel{fig:svd}{{5}{10}{Custom Jacobi SVD vs.\ cuSOLVER \code {gesvdj}: time ratio (center) and Schmidt-spectrum error (right). Both plateau above $\chi _{\max }=64$ (companion to Table 3)}{figure.caption.5}{}}
 \@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Strong-scaling speedup (left) and weak-scaling wall time (right) (companion to Table 4).}}{10}{figure.caption.6}\protected@file@percent }
 \newlabel{fig:scaling}{{6}{10}{Strong-scaling speedup (left) and weak-scaling wall time (right) (companion to Table 4)}{figure.caption.6}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces GPU-computed observables over the $(J,g)$ phase diagram ($L=20$, $\chi _{\max }=64$, 20 Trotter steps at $dt=0.1$). Top-right: mean $|\langle \sigma ^z_i\rangle |$. Bottom-left: mean $|\langle \sigma ^x_i\rangle |=0$ (zero by parity). Bottom-right: nearest-neighbour $x$-correlator.}}{10}{figure.caption.7}\protected@file@percent }
-\newlabel{fig:obs}{{7}{10}{GPU-computed observables over the $(J,g)$ phase diagram ($L=20$, $\chi _{\max }=64$, 20 Trotter steps at $dt=0.1$). Top-right: mean $|\langle \sigma ^z_i\rangle |$. Bottom-left: mean $|\langle \sigma ^x_i\rangle |=0$ (zero by parity). Bottom-right: nearest-neighbour $x$-correlator}{figure.caption.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces GPU-computed observables over the $(J,g)$ phase diagram ($L=20$, $\chi _{\max }=64$, 20 Trotter steps at $dt=0.1$). Top-right: mean $|\langle \sigma ^z_i\rangle |$. Bottom-left: mean $|\langle \sigma ^x_i\rangle |=0$ (zero by parity). Bottom-right: nearest-neighbour $x$-correlator.}}{11}{figure.caption.7}\protected@file@percent }
+\newlabel{fig:obs}{{7}{11}{GPU-computed observables over the $(J,g)$ phase diagram ($L=20$, $\chi _{\max }=64$, 20 Trotter steps at $dt=0.1$). Top-right: mean $|\langle \sigma ^z_i\rangle |$. Bottom-left: mean $|\langle \sigma ^x_i\rangle |=0$ (zero by parity). Bottom-right: nearest-neighbour $x$-correlator}{figure.caption.7}{}}
 \@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces TEBD vs.\ exact diagonalization, per-step max error. Final fidelity loss $4.3\times 10^{-11}$.}}{11}{figure.caption.8}\protected@file@percent }
 \newlabel{fig:validate}{{8}{11}{TEBD vs.\ exact diagonalization, per-step max error. Final fidelity loss $4.3\times 10^{-11}$}{figure.caption.8}{}}
 \gdef \@abspage@last{11}
