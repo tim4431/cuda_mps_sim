@@ -10,7 +10,7 @@
 \usepackage{hyperref}
 \usepackage{titlesec}
 
-\setlength{\parskip}{3pt}
+\setlength{\parskip}{1.5pt}
 \setlength{\parindent}{0pt}
 \titlespacing*{\section}{0pt}{8pt}{3pt}
 \titlespacing*{\subsection}{0pt}{6pt}{2pt}
@@ -28,7 +28,7 @@
 
 \begin{center}
 {\Large\bfseries GPU-Accelerated TEBD for the 1D Transverse-Field Ising Model}\\[4pt]
-{\large Final Report --- CME 213: Parallel Computing with CUDA, MPI and OpenMP}\\[3pt]
+{\large Final Report, CME 213: Parallel Computing with CUDA, MPI and OpenMP}\\[3pt]
 {\normalsize Hercy Shen, Chiling Han, Xin Wei\quad|\quad June 8, 2026}
 \end{center}
 
@@ -44,8 +44,7 @@ We simulate the \textbf{real-time quench dynamics} of the one-dimensional transv
 A chain of $L$ spin-$\tfrac{1}{2}$ sites lives in a Hilbert space of dimension $2^L$, so storing the wavefunction exactly is impossible beyond $L\approx30$. The key physical fact that makes simulation tractable is that low-energy and short-time states of 1D local Hamiltonians have \textit{bounded entanglement}, and can be compressed into a \textit{Matrix Product State (MPS)}: the $2^L$ amplitudes are factored into $L$ small rank-3 tensors connected by \emph{bond} indices of dimension $\chi$. The MPS stores only $O(L\chi^2 d)$ numbers ($d=2$), where $\chi$ grows with the entanglement across each cut.
 
 \textbf{Computation.} We evolve the state with \textit{Time-Evolving Block Decimation
-(TEBD)}. The propagator $e^{-iHt}$ is Suzuki--Trotter split into a product of nearest-neighbour two-site gates $U_b=e^{-i\,\Delta t\,H_b}$. Each Trotter step applies $L-1$ gates; applying one gate is one small complex SVD that re-compresses the two-site tensor back to bond dimension $\chi$. This SVD is the major time consuming part --- it consumes $>99.6\%$ of GPU kernel time --- and is the target of all
-parallel work in this project.
+(TEBD)}: the propagator $e^{-iHt}$ is Suzuki--Trotter split into nearest-neighbour two-site gates $U_b=e^{-i\,\Delta t\,H_b}$, and each Trotter step applies $L-1$ gates. Applying one gate is one small complex SVD that re-compresses the two-site tensor back to bond dimension $\chi$; this SVD takes $>99.6\%$ of GPU kernel time and is the target of all parallel work here.
 
 \begin{itemize}
 \item \textbf{Inputs:} chain length $L$; couplings $(J,g)$; an initial product state;   Trotter step $dt$; number of steps $N$; max bond dimension $\chi_{\max}$;   Trotter order (1, 2, or 4).
@@ -53,33 +52,21 @@ parallel work in this project.
 \item \textbf{Assumptions/simplifications:} open boundary conditions, local dimension $d=2$, nearest-neighbour bonds only.
 \end{itemize}
 
-\textbf{Why this matters, and why parallelism.} Entanglement grows under a quench, so the bond dimension $\chi(t)$ climbs over time (Fig.\ 1) until it saturates the budget $\chi_{\max}$. Because each bond update costs $O(\chi^3)$, doubling the \emph{effective} bond dimension is an $8\times$ hit, and the cost of mapping out the physics, i.e, sweeping the $(J,g)$ phase diagram, grows quickly. A single GPU accelerates each evolution once $\chi$ is large.
-Moreover, multiple GPUs are needed to turn a phase-diagram sweep that takes minutes-per-point into a study that finishes in wall-clock minutes.
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.88\linewidth]{summary.png}
-  \caption{Reference $L=20$ TFIM quench ($J=g=1$, order 4, $\chi_{\max}=64$).  Entanglement growth drives bond-dimension growth, which sets the SVD sizes that dominate runtime.}
-\end{figure}
+\textbf{Why this matters, and why parallelism.} Entanglement grows under a quench, so $\chi(t)$ climbs over time (Fig.~\ref{fig:summary}) until it saturates $\chi_{\max}$. Each bond update costs $O(\chi^3)$, so doubling the effective bond dimension is an $8\times$ hit and a $(J,g)$ phase-diagram sweep grows expensive fast. A single GPU accelerates each evolution once $\chi$ is large, and multiple GPUs turn a minutes-per-point sweep into a study that finishes in wall-clock minutes.
 
 %% -------------------------------------------------------------------------
 \section{Algorithms and state of the art}
 
-\textbf{Core algorithm.} We implement TEBD on a \textit{right-canonical MPS} in Vidal form, the standard for real-time evolution because it
-keeps the Schmidt spectrum $\Lambda$ on every bond explicit and makes truncation a local, optimal (in the 2-norm) operation. The two-site update is:
+\textbf{Core algorithm.} We implement TEBD on a \textit{right-canonical MPS} in Vidal form, standard for real-time evolution because it keeps the Schmidt spectrum $\Lambda$ explicit on every bond and makes truncation locally optimal in the 2-norm. The two-site update is:
 (1) contract the gate with the two-site tensor $\Theta$;
 (2) SVD the reshaped $(\chi_L d)\times(d\chi_R)$ matrix;
 (3) truncate to the largest $\chi_{\max}$ singular values and renormalize;
 (4) restore MPS form. The Trotter layer supports orders 1, 2 (symmetric), and 4 (Forest--Ruth), so the user can trade gate count for $O(dt^p)$ accuracy.
 
 \textbf{State of the art.}
-Mature library implementations, for example, \textit{TeNPy}, \textit{ITensor}, \textit{quimb}, \textit{TensorNetwork}, are
-CPU/Python-centric and highly general. On GPUs, NVIDIA's \textit{cuTensorNet} (cuQuantum) provides library-level batched contraction and SVD. The main algorithmic variants applicable to our problem are:
-(i) the SVD engine;
-(ii) the time integrator (Trotter--Suzuki); and
-(iii) the parallel decomposition (single-chain spatial parallelism).
+Mature libraries (\textit{TeNPy}, \textit{ITensor}, \textit{quimb}, \textit{TensorNetwork}) are CPU/Python-centric and general; on GPUs, NVIDIA's \textit{cuTensorNet} (cuQuantum) offers library-level batched contraction and SVD. The algorithmic variants relevant to our problem are the SVD engine, the time integrator (Trotter--Suzuki), and the parallel decomposition.
 
-\textbf{Our choice and how it compares.} We deliberately do \textit{not} try to beat cuTensorNet on raw throughput. Instead we build a clean, fully instrumented TEBD in which every kernel is visible, so we can attribute time to gate contraction, SVD, truncation, and PCIe traffic without a library hiding the cost.
+\textbf{Our choice and how it compares.} We deliberately do \textit{not} try to beat cuTensorNet on raw throughput. Instead we build a fully instrumented TEBD in which every kernel is visible, so we can attribute time to gate contraction, SVD, truncation, and PCIe traffic without a library hiding the cost.
 For the SVD we chose \textit{one-sided Jacobi}: at our matrix sizes ($2\chi \lesssim 256$) it converges in 5 - 10 sweeps and avoids the QR preprocessing that \code{gesvd} only amortizes on large matrices. The production path uses cuSOLVER's \code{gesvdj}; we additionally wrote a
 custom one-sided Jacobi CUDA kernel as the from-scratch deliverable and to quantify the gap to the standard library.
 
@@ -91,10 +78,7 @@ custom one-sided Jacobi CUDA kernel as the from-scratch deliverable and to quant
 A single TEBD chain has \textit{limited spatial parallelism}. Within one Trotter sub-step the even bonds $\{0,2,4,\dots\}$ and odd bonds $\{1,3,5,\dots\}$ touch disjoint tensors and are independent ($\sim(L-1)/2$-way), but the even and odd sub-steps are \emph{sequential}, and a spatial decomposition that splits the chain across ranks would require one MPI round-trip per sub-step to exchange the
 boundary Schmidt spectrum. At our target sizes ($L\le80$) the per-step compute is far too small to hide that latency.
 
-We therefore use \textit{task parallelism}: each MPI rank owns one GPU and runs complete, independent TEBD evolutions for a set of $(J,g)$ points in the phase diagram, with zero in-loop communication. This mirrors how production studies use libraries like ITensor (independent parameter runs).
-
-After discussion, we rejected two alternatives: (a) spatial chain decomposition, which is infeasible at small $L$ due to per-sub-step
-synchronization; (b) replicated-parameter + distributed chain, which needs per-bond MPI barriers.
+We therefore use \textit{task parallelism}: each MPI rank owns one GPU and runs complete, independent TEBD evolutions for a set of $(J,g)$ points in the phase diagram, with zero in-loop communication, as production parameter studies do. We rejected two alternatives: (a) spatial chain decomposition, infeasible at small $L$ due to per-sub-step synchronization; (b) replicated-parameter plus distributed chain, which needs per-bond MPI barriers.
 
 \subsection{Single-GPU bond-update pipeline}
 
@@ -120,24 +104,18 @@ Every stage is bracketed by CUDA events so \code{bench\_breakdown} can report pe
 \subsection{Persistent device-resident MPS and streams}
 
 \begin{itemize}
-\item \textbf{Persistent device MPS (\code{GpuMps}).} All $L$ B-tensors and Schmidt spectra stay device-resident for the whole evolution. Profiled H2D/D2H drops from tens of MB to $\sim0.2$ MB; all buffers pre-allocated once (\code{GpuTebdWorkspace}), so there is zero \code{cudaMalloc} during evolution.
-\item \textbf{Streams within a sub-step.} \code{tebd\_step\_gpu\_persistent} accepts $n$ workspaces with independent CUDA streams and cuSOLVER handles. However, truncation requires a \code{cudaStreamSynchronize} mid-bond (to read singular values host-side), serializing bonds. Measured stream speedup is negligible (Table~1), which is an honest negative result the performance model predicts.
+\item \textbf{Persistent device MPS (\code{GpuMps}).} All $L$ B-tensors and Schmidt spectra stay device-resident for the whole evolution, dropping profiled H2D/D2H from tens of MB to $\sim0.2$ MB; buffers are pre-allocated once (\code{GpuTebdWorkspace}), so there is zero \code{cudaMalloc} during evolution.
+\item \textbf{Streams within a sub-step.} \code{tebd\_step\_gpu\_persistent} accepts $n$ workspaces with independent CUDA streams and cuSOLVER handles. However, truncation requires a \code{cudaStreamSynchronize} mid-bond (to read singular values host-side), serializing bonds. Measured stream speedup is negligible (Table~1), a negative result the performance model predicts.
 \end{itemize}
 
 \subsection{MPI decomposition and communication pattern}
 
-Each rank calls \code{cudaSetDevice(rank \% n\_gpus)}, builds its $(J,g)$ points locally (no scatter), and runs independent evolutions. The TEBD loop contains no MPI calls. (See discussion above on why we didn't do that). Only at the end does rank 0 collect results via:
-\begin{enumerate}
-\item \code{MPI\_Gather} of one \code{int} per rank (record count), then
-\item \code{MPI\_Gatherv} of variable-length result records (timing, $\chi_{\max}$, $S_\text{mid}$,
-      and $2L+L^2$ observable values).
-\end{enumerate}
-% MPI never touches device buffers: \code{GpuMps::sync\_to\_host} copies at most $L\cdot\chi_{\max}$ doubles ($\approx10$ KB) into a host vector first.
+Each rank calls \code{cudaSetDevice(rank \% n\_gpus)}, builds its $(J,g)$ points locally (no scatter), and runs independent evolutions; the TEBD loop contains no MPI calls. Only at the end does rank 0 collect results: an \code{MPI\_Gather} of one \code{int} per rank (record counts), then an \code{MPI\_Gatherv} of variable-length result records (timing, $\chi_{\max}$, $S_\text{mid}$, and $2L+L^2$ observable values).
 
 %% -------------------------------------------------------------------------
 \section{Performance model}
 
-We build a quantitative, falsifiable model from three pieces.
+We build a quantitative, falsifiable model from four pieces.
 
 \textbf{(a) Per-bond compute and the latency/compute crossover.} The dominant cost is the SVD of a $2\chi_a\times2\chi_a$ complex matrix. One-sided Jacobi does $O(\chi_a^3)$ flops per sweep over $\sim5$--$10$ sweeps, plus a fixed overhead $t_0$ per bond:
 \begin{equation}
@@ -184,12 +162,6 @@ $\chi_{\max}$ & CPU (s) & M3 GPU (s) & Persistent (s) & Streamed (s) & CPU/Persi
 \smallskip
 \noindent\emph{Table 1. GPU overtakes CPU at $\chi_{\max}\ge48$; persistent MPS is 1--3\% faster than M3 host-staging; four streams add nothing.}
 
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.72\linewidth]{m4_gpu_timing.png}
-  \caption{Single-GPU full-step timing vs.\ $\chi_{\max}$.}
-\end{figure}
-
 \noindent\textbf{Per-stage kernel-time breakdown} (\code{bench\_breakdown} / Nsight \code{cuda\_gpu\_kern\_sum}):
 
 \smallskip
@@ -211,14 +183,8 @@ all remaining cuSOLVER helpers & 3.2\% & sort, scale, QR, etc. \\
 \noindent\emph{Table 2. cuSOLVER Jacobi is $>99.6\%$ of GPU kernel time; all custom kernels together $<0.4\%$.}
 
 \smallskip
-\textbf{Model vs.\ measurement.} The crossover study (\code{bench\_update}, Fig.\ 3) confirms prediction (a): at TFIM-realized $\chi_a\approx41$ the GPU is latency-bound (flat across $\chi_{\max}=64$--128 in Table 1), crossing the CPU near $\chi\approx96$
+\textbf{Model vs.\ measurement.} The crossover study (\code{bench\_update}, Fig.~\ref{fig:crossover}) confirms prediction (a): at TFIM-realized $\chi_a\approx41$ the GPU is latency-bound (flat across $\chi_{\max}=64$--128 in Table 1), crossing the CPU near $\chi\approx96$
 and reaching $\sim5\times$ at $\chi=128$. Nsight confirms model (c): no MPI call appears in the timeline; every rank spends 96.2--96.5\% of kernel time in the three Jacobi kernels.
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.88\linewidth]{bench_M3.png}
-  \caption{(a) Wall time vs.\ $L$ at $\chi_{\max}=64$: linear, $\sim1.3$ ms/bond ---  latency-bound, as predicted. (b) Per-call \code{update\_bond} vs.\ $\chi$: CPU/GPU crossover near $\chi\approx96$--128.}
-\end{figure}
 
 %% -------------------------------------------------------------------------
 \section{Bottleneck analysis}
@@ -227,15 +193,13 @@ The implementation has three regimes, each tied to hardware:
 
 \begin{itemize}
 \item \textbf{Single GPU, large $\chi$: compute-bound on the SVD.}
-  cuSOLVER's Jacobi kernels are $>99.6\%$ of GPU kernel time (Table 2). A roofline argument corroborates this: with the $2\chi_a\times2\chi_a$ complex matrix fitting in Turing's 4 MB L2 cache (at $\chi_a=64$ the matrix is 256 KB), each element is loaded
-  from HBM once per sweep, giving cache-resident arithmetic intensity $I\approx9n/16$ flops/byte where $n=2\chi_a$. At $\chi_a=64$ ($n=128$),
-  $I\approx72$ flops/byte --- roughly $95\times$ above the Turing ridge point ($509\,\text{GFLOP/s}\div672\,\text{GB/s}\approx0.76$ flops/byte), placing the SVD well into the compute-bound region. Nsight Systems confirms: PCIe traffic after persistent MPS is only $\approx0.24$ MB H2D and $0.18$ MB D2H.
+  cuSOLVER's Jacobi kernels are $>99.6\%$ of GPU kernel time (Table 2). A roofline argument corroborates this: the $2\chi_a\times2\chi_a$ complex matrix fits in Turing's 4 MB L2 (256 KB at $\chi_a=64$), so each element is loaded from HBM once per sweep, giving cache-resident intensity $I\approx9n/16$ flops/byte ($n=2\chi_a$). At $\chi_a=64$, $I\approx72$ flops/byte, roughly $95\times$ above the Turing ridge ($509\,\text{GFLOP/s}\div672\,\text{GB/s}\approx0.76$), placing the SVD deep in the compute-bound region; PCIe traffic after persistent MPS is only $\approx0.24$ MB H2D / $0.18$ MB D2H.
 
 \item \textbf{Single GPU, small $\chi$: latency-bound.}
-  At TFIM-realized $\chi_a\approx41$, every SVD matrix is small ($82\times82$ complex), so the absolute flop count is too small to saturate the GPU. Per-bond time is set by kernel launch and cuSOLVER dispatch overhead $t_0$ --- the GPU only wins once $\chi_{\max}\ge48$ (Table 1). The custom gate and restore kernels ($O(\chi^2)$ work, $<0.4\%$ of kernel time) are always launch-bound.
+  At TFIM-realized $\chi_a\approx41$, every SVD matrix is small ($82\times82$ complex), so the absolute flop count is too small to saturate the GPU. Per-bond time is set by kernel launch and cuSOLVER dispatch overhead $t_0$, and the GPU only wins once $\chi_{\max}\ge48$ (Table 1). The custom gate and restore kernels ($O(\chi^2)$ work, $<0.4\%$ of kernel time) are always launch-bound.
 
 \item \textbf{Multi-GPU: load imbalance, not communication.}
-  Computation is $>99\%$ of wall time; the final \code{Gatherv} is $<0.01\%$ (Table 2). The distributed bottleneck is purely \textbf{load imbalance}: round-robin gives one rank the four hardest ($J=2.0$) pairs, which run $2.2\times$ longer than the cheapest, and explains the $\sim19\%$ efficiency gap at $P=4$ (\S8). The phase-diagram heatmap (Fig.\ 6) makes this concrete: $\chi_a$ varies from 21 (cheap, low-$J$) to 64 saturated (expensive, high-$J$), a $3\times$ spread in matrix size translating to a $27\times$ spread in SVD flops.
+  Computation is $>99\%$ of wall time; the final \code{Gatherv} is $<0.01\%$ (Table 2). The distributed bottleneck is purely \textbf{load imbalance}: round-robin gives one rank the four hardest ($J=2.0$) pairs, which run $2.2\times$ longer than the cheapest, and explains the $\sim19\%$ efficiency gap at $P=4$ (\S8). The phase-diagram heatmap (Fig.~\ref{fig:phase}) shows this directly: $\chi_a$ varies from 21 (cheap, low-$J$) to a saturated 64 (expensive, high-$J$), a $3\times$ spread in matrix size that becomes a $27\times$ spread in SVD flops.
 \end{itemize}
 
 A secondary bottleneck is the \textbf{mid-pipeline host sync} for truncation, which prevents stream overlap; removing it would require device-side top-$k$ selection.
@@ -246,11 +210,11 @@ A secondary bottleneck is the \textbf{mid-pipeline host sync} for truncation, wh
 We explored four variants; each shifts the bottleneck differently.
 
 \begin{enumerate}
-\item \textbf{Host-staging (M3) $\to$ persistent device MPS.} Eliminating per-bond bulk H2D/D2H drops profiled PCIe traffic from tens of MB to $\sim0.2$ MB and gives a steady 1--3\% full-step speedup (Table 1). The gain is small precisely because the SVD already dominates.
+\item \textbf{Host-staging (M3) $\to$ persistent device MPS.} Eliminating per-bond bulk H2D/D2H cuts profiled PCIe traffic from tens of MB to $\sim0.2$ MB for a steady 1--3\% full-step speedup (Table 1); the gain is small because the SVD already dominates.
 
-\item \textbf{Single stream $\to$ 4 streams.} Negligible (Table 1, Fig.\ 2). The model predicted it; profiling showed why: host-side truncation serializes bonds.
+\item \textbf{Single stream $\to$ 4 streams.} Negligible (Table 1, Fig.~\ref{fig:gputiming}). The model predicted it; profiling showed why: host-side truncation serializes bonds.
 
-\item \textbf{cuSOLVER \code{gesvdj} vs.\ custom one-sided Jacobi SVD.} Our hand-written Jacobi kernel is \textbf{1.2--2.2$\times$ slower} than cuSOLVER and agrees to $\lesssim10^{-12}$ (Table 3, Fig.\ 4). Extending the benchmark to $\chi_{\max}=256$ (Table 3) confirms that both paths plateau once $\chi_{\max}$ exceeds the realized $\chi_a\approx41$--64: cuSOLVER time changes $<1\%$ from $\chi_{\max}=64$ to 256, and the ratio stabilizes at $\approx0.456$. This plateau is a direct consequence of the latency-bound regime: SVD matrix size is set by $\chi_a$, not $\chi_{\max}$.
+\item \textbf{cuSOLVER \code{gesvdj} vs.\ custom one-sided Jacobi SVD.} Our hand-written Jacobi kernel is \textbf{1.2--2.2$\times$ slower} than cuSOLVER and agrees to $\lesssim10^{-12}$ (Table 3, Fig.~\ref{fig:svd}). Both paths plateau once $\chi_{\max}$ exceeds the realized $\chi_a\approx41$--64 (cuSOLVER time changes $<1\%$ from $\chi_{\max}=64$ to 256), a direct consequence of the latency-bound regime: SVD matrix size is set by $\chi_a$, not $\chi_{\max}$.
 
 \item \textbf{Trotter order (1/2/4).} Higher order trades more gates per step for $O(dt^p)$ accuracy; order 4 (Forest--Ruth) reaches the ED-validation floor ($\sim10^{-6}$, \S9) at larger $dt$.
 \end{enumerate}
@@ -264,9 +228,7 @@ $\chi_{\max}$ & cuSOLVER (s) & Custom Jacobi (s) & Ratio & max $|\Delta\sigma|$ 
  32 & 17.352 & 27.089 & 0.641 & $5.84\times10^{-13}$ \\
  48 & 22.688 & 46.056 & 0.493 & $9.96\times10^{-13}$ \\
  64 & 23.751 & 52.160 & 0.455 & $1.00\times10^{-12}$ \\
- 96 & 23.726 & 52.179 & 0.455 & $1.00\times10^{-12}$ \\
 128 & 23.754 & 52.208 & 0.455 & $1.00\times10^{-12}$ \\
-192 & 23.856 & 52.309 & 0.456 & $1.00\times10^{-12}$ \\
 256 & 23.985 & 52.435 & 0.457 & $1.00\times10^{-12}$ \\
 \bottomrule
 \end{tabular}
@@ -275,13 +237,6 @@ $\chi_{\max}$ & cuSOLVER (s) & Custom Jacobi (s) & Ratio & max $|\Delta\sigma|$ 
 \noindent\emph{Table 3. \code{bench\_svd}: cuSOLVER vs.\ custom Jacobi, $L=20$, 20 steps. Both paths
 plateau above $\chi_{\max}=64$; the wide-matrix adjoint fix reduced error from $O(10^{-1})$ to
 $\lesssim10^{-12}$.}
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.92\linewidth]{svd_compare.png}
-  \caption{Custom Jacobi SVD vs.\ cuSOLVER \code{gesvdj}: time ratio (center) and
-  Schmidt-spectrum error (right). Both plateau above $\chi_{\max}=64$.}
-\end{figure}
 
 %% -------------------------------------------------------------------------
 \section{Scalability analysis}
@@ -297,42 +252,22 @@ Mode & Ranks & Pairs/rank & Time (s) & Speedup & Efficiency \\
 strong & 1 & 16 & 321.6 & 1.00 & 100\% \\
 strong & 2 &  8 & 184.3 & 1.75 &  87\% \\
 strong & 4 &  4 &  99.1 & 3.24 &  81\% \\
-weak   & 1 &  4 &  17.1 & ---  & 100\% \\
-weak   & 2 &  4 &  59.1 & ---  &  29\% \\
-weak   & 4 &  4 & 103.5 & ---  &  17\% \\
+weak   & 1 &  4 &  17.1 & n/a  & 100\% \\
+weak   & 2 &  4 &  59.1 & n/a  &  29\% \\
+weak   & 4 &  4 & 103.5 & n/a  &  17\% \\
 \bottomrule
 \end{tabular}
 
 \smallskip
 \noindent\emph{Table 4. MPI strong and weak scaling. Strong speedup relative to $P=1$ wall time (321.6 s).}
 
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.88\linewidth]{scaling_m4.png}
-  \caption{Strong-scaling speedup (left) and weak-scaling wall time (right).}
-\end{figure}
+\textbf{Strong scaling.} Speedup reaches $3.24\times$ at $P=4$ (81\% efficiency, Fig.~\ref{fig:scaling}). The 19\% loss is exactly the load imbalance the model predicted: round-robin hands rank 3 the four $J=2.0$ pairs (highest entanglement), which run $\sim2.2\times$ longer than rank 0's cheap $J=0.25$ pairs. Communication is $<0.01\%$.
 
-\textbf{Strong scaling.} Speedup reaches $3.24\times$ at $P=4$ (81\% efficiency). The 19\% loss is exactly the load imbalance the model predicted: round-robin hands rank 3 the four $J=2.0$ pairs (highest entanglement), which run $\sim2.2\times$ longer than rank 0's cheap $J=0.25$ pairs. Communication is $<0.01\%$.
+\textbf{Weak scaling.} Efficiency falls sharply (29\% at $P=2$, 17\% at $P=4$), but this is \emph{not} a communication or synchronization failure. The weak mode hands each added rank \emph{higher-$J$} pairs, which are intrinsically more expensive ($2$--$6\times$ the cost of the $P=1$ pairs). True constant-work weak scaling would require balancing by \emph{estimated entanglement} rather than pair count.
 
-\textbf{Weak scaling.} Efficiency falls sharply (29\% at $P=2$, 17\% at $P=4$) --- but this is \emph{not} a communication or synchronization failure. The weak mode hands each added rank \emph{higher-$J$} pairs, which are intrinsically more expensive ($2$--$6\times$ the cost of the $P=1$ pairs). True constant-work weak scaling would require balancing by \emph{estimated entanglement} rather than pair count.
+\textbf{Phase-diagram structure.} Figure~\ref{fig:phase} shows the end-of-evolution mid-chain entropy and realized $\chi_a$ across the $4\times4$ grid: entropy peaks near the critical point ($J\approx g$) and saturates $\chi_{\max}=64$ at most high-$J$ points, while the paramagnetic corner reaches only $\chi_a\approx21$--45. This 2--6$\times$ spread in $\chi_a$ sets the per-pair SVD cost and explains the load-imbalance gap.
 
-\textbf{Scaling limits.} Strong mode exhausts the 16-pair grid at 16 ranks; the limit is the size of the physics sweep, not the network.
-
-\textbf{Phase-diagram structure.} Figure~6 shows the end-of-evolution mid-chain entropy and realized bond dimension $\chi_a$ across the $4\times4$ $(J,g)$ grid. Entropy peaks near the quantum critical point ($J\approx g$) and saturates $\chi_{\max}=64$ for most high-$J$ points; the low-$J$, high-$g$ paramagnetic corner reaches only $\chi_a\approx21$--45. This 2--6$\times$ spread in $\chi_a$ directly sets the per-pair SVD cost and explains the observed load-imbalance gap.
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.92\linewidth]{phase_heatmap.png}
-  \caption{Left: final mid-chain entropy $S_\text{mid}$. Right: max realized bond   dimension $\chi_a$. High-$J$ points saturate $\chi_{\max}=64$ and dominate runtime;   the paramagnetic corner (small $J$, large $g$) is cheap.}
-\end{figure}
-
-\textbf{Observables over the phase diagram.} Figure~7 shows site magnetization and the nearest-neighbour $x$-correlator collected by the GPU sweep. The transverse magnetization $\langle\sigma^x_i\rangle$ is identically zero by parity symmetry: the all-$|0\rangle$ initial state has definite $\Pi=\bigotimes\sigma^z_i$ parity, and since $\sigma^x_i\to-\sigma^x_i$ under $\Pi$ while the Hamiltonian commutes with $\Pi$, the expectation value is pinned to zero throughout the evolution. The ferromagnetic corner (large $J$, small $g$) shows the largest NN correlations and smallest $|\langle\sigma^z_i\rangle|$, consistent with the spin chain being driven toward a correlated ground state.
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.92\linewidth]{observables_heatmap.png}
-  \caption{GPU-computed observables over the $(J,g)$ phase diagram ($L=20$, $\chi_{\max}=64$, 20 Trotter steps at $dt=0.1$). Top-right: mean   $|\langle\sigma^z_i\rangle|$. Bottom-left: mean $|\langle\sigma^x_i\rangle|=0$   (zero by parity). Bottom-right: nearest-neighbour $x$-correlator.}
-\end{figure}
+\textbf{Observables over the phase diagram.} The sweep also collects the full set of GPU-computed observables ($\langle\sigma^z_i\rangle$, $\langle\sigma^x_i\rangle$, and $\langle\sigma^x_i\sigma^x_j\rangle$ for every pair; Fig.~\ref{fig:obs}). The transverse magnetization $\langle\sigma^x_i\rangle$ is zero by parity: the all-$|0\rangle$ state has definite $\Pi=\bigotimes\sigma^z_i$, $\sigma^x_i\to-\sigma^x_i$ under $\Pi$, and $H$ commutes with $\Pi$, pinning the expectation to zero. The ferromagnetic corner (large $J$, small $g$) shows the largest NN correlations and smallest $|\langle\sigma^z_i\rangle|$, as expected.
 
 %% -------------------------------------------------------------------------
 \section{Correctness and verification}
@@ -342,50 +277,33 @@ We verify correctness at four independent levels:
 \begin{enumerate}
 \item \textbf{Unit tests.} 54 Google Test cases across 6 binaries cover tensor ops, the hand-written GEMM/GEMV/SVD/\code{expm}/contraction/\code{kron}, MPS observables, the TFI model (Hermiticity, sum rules), and TEBD invariants (norm preservation, $S^z$ conservation, entropy growth, Trotter-order convergence). All pass at $10^{-12}$ (exact ops) / $10^{-10}$ (SVD-dependent).
 
-\item \textbf{Analytical / exact-diagonalization oracle.} A full $2^L\times2^L$ state-vector evolution validates TEBD on small systems. At $L=8$, $dt=0.05$, $t=2$, order 4, $\chi_{\max}=64$: max error $5.1\times10^{-6}$ in $\langle\sigma^z\rangle$, $4.7\times10^{-6}$ in $\langle\sigma^x\sigma^x\rangle$, $2.2\times10^{-6}$ in entropy, and final fidelity loss $4.3\times10^{-11}$. The residual is dominated by the $O(dt^4)$ Trotter error --- the error sits at the Trotter floor from the first step onward (Fig.\ 8).
+\item \textbf{Analytical / exact-diagonalization oracle.} A full $2^L\times2^L$ state-vector evolution validates TEBD on small systems. At $L=8$, $dt=0.05$, $t=2$, order 4, $\chi_{\max}=64$: max error $5.1\times10^{-6}$ in $\langle\sigma^z\rangle$, $4.7\times10^{-6}$ in $\langle\sigma^x\sigma^x\rangle$, $2.2\times10^{-6}$ in entropy, and final fidelity loss $4.3\times10^{-11}$. The residual is dominated by the $O(dt^4)$ Trotter error; it sits at the Trotter floor from the first step onward (Fig.~\ref{fig:validate}).
 
-\item \textbf{CPU$\leftrightarrow$GPU agreement.} \code{validate\_gpu} and \code{validate\_persistent} run GPU and CPU reference side-by-side for 30 steps. Max discrepancies are $3.53\times10^{-13}$ and $3.60\times10^{-13}$ --- at the floor where CPU Jacobi and cuSOLVER \code{gesvdj} agree on singular values. Custom Jacobi agrees to $\lesssim10^{-12}$ (Table 3).
+\item \textbf{CPU$\leftrightarrow$GPU agreement.} \code{validate\_gpu} and \code{validate\_persistent} run GPU and CPU reference side-by-side for 30 steps. Max discrepancies are $3.53\times10^{-13}$ and $3.60\times10^{-13}$, at the floor where CPU Jacobi and cuSOLVER \code{gesvdj} agree on singular values. Custom Jacobi agrees to $\lesssim10^{-12}$ (Table 3).
 
 \item \textbf{Multi-rank consistency.} 1-, 2-, and 4-rank sweeps produce \textit{identical} $(J,g)\!\to\!(\chi_{\max},S_\text{mid})$ records, and 1-stream and 4-stream persistent configurations agree to every printed digit.
 \end{enumerate}
 
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.72\linewidth]{validate_errors.png}
-  \caption{TEBD vs.\ exact diagonalization, per-step max error. Final fidelity loss
-  $4.3\times10^{-11}$.}
-\end{figure}
-
-\textbf{Debugging notes.} Three subtle bugs were caught with \code{compute-sanitizer} and auditing: (i) a gauge bug from cuSOLVER returning $V$ (not $V^H$) in column-major, fixed by an explicit row$\to$col transpose and conjugation in the right-restore kernel; (ii) a gate shared-memory load that zero-padded when a block had $<16$ threads, fixed with a cooperative strided load; (iii) an out-of-bounds write from \code{gesvdj\_bufferSize} being non-monotone in $(m,n)$, fixed by re-querying \code{lwork} per call.
-
 %% -------------------------------------------------------------------------
 \section{Discussion, limitations, and future work}
 
-\textbf{What worked, and the largest payoffs.} The task-parallel MPI with zero in-loop communication is the right one at this problem scale and delivered 81\% strong-scaling efficiency limited only by load imbalance. On the single GPU, the persistent device MPS removed the M3 PCIe bottleneck cleanly.
+\textbf{What worked, and the largest payoffs.} Task-parallel MPI with zero in-loop communication is the right fit at this scale and delivered 81\% strong-scaling efficiency, limited only by load imbalance; on the single GPU, the persistent device MPS removed the M3 PCIe bottleneck cleanly.
 
-\textbf{What was not worth the complexity.} \textit{CUDA streams} within a sub-step gave negligible speedup because host-side truncation serializes bonds. The \textit{custom Jacobi SVD} was valuable as a learning deliverable but stays 1.2--2.2$\times$ slower than
-cuSOLVER.
+\textbf{What was not worth the complexity.} \textit{CUDA streams} within a sub-step gave negligible speedup because host-side truncation serializes bonds, and the \textit{custom Jacobi SVD}, while valuable as a learning deliverable, stays 1.2--2.2$\times$ slower than cuSOLVER.
 
 \textbf{Limitations and future directions.}
 \begin{itemize}
-\item \textbf{Load-balanced assignment.} Round-robin ignores the $\sim2$--$6\times$ runtime  spread across $(J,g)$. Sorting pairs by estimated $\chi_a$ and bin-packing to ranks  should lift strong-scaling efficiency toward $\gtrsim95\%$ and fix the apparent  weak-scaling collapse (which is really non-uniform work).
+\item \textbf{Load-balanced assignment.} Round-robin ignores the $\sim2$--$6\times$ runtime spread across $(J,g)$; sorting pairs by estimated $\chi_a$ and bin-packing should lift strong-scaling efficiency toward $\gtrsim95\%$ and remove the apparent weak-scaling collapse.
 
-\item \textbf{Device-side truncation.} A GPU top-$k$ singular-value selection would remove  the mid-pipeline host sync and finally let streams overlap bonds --- the clearest path  to single-GPU speedup beyond the SVD ceiling.
+\item \textbf{Device-side truncation.} A GPU top-$k$ singular-value selection would remove the mid-pipeline host sync and let streams overlap bonds, the clearest path past the single-GPU SVD ceiling.
 
-\item \textbf{GPU-side observables.} The sweep now computes and reports full  $\langle\sigma^z_i\rangle$, $\langle\sigma^x_i\rangle$, and two-point correlations  $\langle\sigma^x_i\sigma^x_j\rangle$ for every $(J,g)$ pair. After each GPU evolution  the device MPS is synced to host, and \code{psi.expect()} / \code{psi.corr()} evaluate  the observables; all $2L+L^2$ values are gathered to rank 0 via \code{MPI\_Gatherv}.  Observable heatmaps are generated by \code{src/scripts/plot\_observables.py} (Fig.\ 7).
-
-\item \textbf{Spatial decomposition for $L\gg100$.} A bond-cut spatial decomposition  would be needed when a single evolution exceeds GPU memory or there are too few  $(J,g)$ points to fill the ranks, at the cost of one \code{MPI\_Allgather} of the  boundary Schmidt spectrum per Trotter sub-step.
-
-\item \textbf{CUDA-aware MPI} would let the final gather read device buffers directly,  but the $<10$ KB transfer makes it immaterial here.
+\item \textbf{Spatial decomposition for $L\gg100$.} A bond-cut decomposition would be needed when one evolution exceeds GPU memory or there are too few $(J,g)$ points to fill the ranks, at the cost of one \code{MPI\_Allgather} of the boundary Schmidt spectrum per sub-step; CUDA-aware MPI would then let the gather read device buffers directly, though the $<10$ KB final transfer makes it immaterial today.
 \end{itemize}
 
-\textbf{Connection to lecture.} The project touches the GPU memory hierarchy (shared memory for the gate, coalesced layout transforms, pre-allocation to avoid \code{cudaMalloc}), the roofline model (arithmetic intensity $O(\chi)$ separating latency-bound small SVDs from compute-bound large ones), MPI collectives (\code{Gather}/\code{Gatherv}), and Amdahl/load-balance analysis (strong efficiency set by the slowest rank).
-The central lesson: for this workload the useful parallelism is \emph{task-level}, the bottleneck is a single dense kernel (the SVD), and a good performance model predicted --- ahead of the measurements --- both where the GPU would win and why streams and weak scaling would disappoint.
+\textbf{Connection to lecture.} The project exercises the GPU memory hierarchy (shared memory for the gate, coalesced layout transforms, pre-allocation to avoid \code{cudaMalloc}), the roofline model (arithmetic intensity $O(\chi)$ separating latency-bound small SVDs from compute-bound large ones), MPI collectives, and Amdahl/load-balance analysis. The lesson: the useful parallelism here is \emph{task-level}, the bottleneck is one dense kernel (the SVD), and the performance model predicted ahead of measurement both where the GPU wins and why streams and weak scaling disappoint.
 
 \smallskip
-\noindent\textbf{Hardware/software.} Multi-GPU benchmarks run on the course cluster partition \code{gpu-turing} (NVIDIA Quadro RTX 6000, Turing \code{sm\_75}, 24 GB, NVHPC 24.1, CUDA 12.3, OpenMPI), one GPU per MPI rank. Single-GPU kernel development and the crossover study additionally used a local NVIDIA RTX 5090 (\code{sm\_120}, 32 GB, CUDA 12.9). The CPU baseline is built with \code{g++ -O2 -std=c++14} on one host core. The code is a from-scratch C++14/CUDA/MPI implementation: every linear algebra routine (GEMM, GEMV, SVD, \code{expm}) is hand-written, with cuBLAS/cuSOLVER used only for the production SVD, so every kernel is visible to the profiler.
-
-\hrule\vspace{4pt}
+\noindent\textbf{Hardware/software.} Benchmarks ran on the course partition \code{gpu-turing} (Quadro RTX 6000, \code{sm\_75}, 24 GB, CUDA 12.3, OpenMPI), one GPU per rank; development also used a local RTX 5090 (\code{sm\_120}) and a one-core \code{g++} baseline. All linear algebra is hand-written C++14/CUDA/MPI, with cuBLAS/cuSOLVER only for the production SVD.
 
 %% -------------------------------------------------------------------------
 \section*{References}
@@ -401,7 +319,74 @@ The central lesson: for this workload the useful parallelism is \emph{task-level
 \item N. Hatano and M. Suzuki, \emph{Finding exponential product formulas of higher
   orders} (Suzuki--Trotter decomposition).
 \item NVIDIA cuSOLVER / cuQuantum (cuTensorNet) documentation.
-\item TeNPy, ITensor, quimb --- open-source tensor-network libraries.
+\item TeNPy, ITensor, quimb (open-source tensor-network libraries).
 \end{enumerate}
+
+%% -------------------------------------------------------------------------
+\clearpage
+\appendix
+\section{Debugging notes}
+
+Three subtle bugs were caught with \code{compute-sanitizer} and auditing: (i) a gauge bug from cuSOLVER returning $V$ (not $V^H$) in column-major, fixed by an explicit row$\to$col transpose and conjugation in the right-restore kernel; (ii) a gate shared-memory load that zero-padded when a block had $<16$ threads, fixed with a cooperative strided load; (iii) an out-of-bounds write from \code{gesvdj\_bufferSize} being non-monotone in $(m,n)$, fixed by re-querying \code{lwork} per call.
+
+\section{Supplementary figures}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.88\linewidth]{summary.png}
+  \caption{Reference $L=20$ TFIM quench ($J=g=1$, order 4, $\chi_{\max}=64$).  Entanglement growth drives bond-dimension growth, which sets the SVD sizes that dominate runtime.}
+  \label{fig:summary}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.88\linewidth]{bench_M3.png}
+  \caption{(a) Wall time vs.\ $L$ at $\chi_{\max}=64$: linear, $\sim1.3$ ms/bond, latency-bound as predicted. (b) Per-call \code{update\_bond} vs.\ $\chi$: CPU/GPU crossover near $\chi\approx96$--128.}
+  \label{fig:crossover}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.92\linewidth]{phase_heatmap.png}
+  \caption{Left: final mid-chain entropy $S_\text{mid}$. Right: max realized bond   dimension $\chi_a$. High-$J$ points saturate $\chi_{\max}=64$ and dominate runtime;   the paramagnetic corner (small $J$, large $g$) is cheap.}
+  \label{fig:phase}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.72\linewidth]{m4_gpu_timing.png}
+  \caption{Single-GPU full-step timing vs.\ $\chi_{\max}$ (companion to Table 1).}
+  \label{fig:gputiming}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.92\linewidth]{svd_compare.png}
+  \caption{Custom Jacobi SVD vs.\ cuSOLVER \code{gesvdj}: time ratio (center) and
+  Schmidt-spectrum error (right). Both plateau above $\chi_{\max}=64$ (companion to Table 3).}
+  \label{fig:svd}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.88\linewidth]{scaling_m4.png}
+  \caption{Strong-scaling speedup (left) and weak-scaling wall time (right) (companion to Table 4).}
+  \label{fig:scaling}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.92\linewidth]{observables_heatmap.png}
+  \caption{GPU-computed observables over the $(J,g)$ phase diagram ($L=20$, $\chi_{\max}=64$, 20 Trotter steps at $dt=0.1$). Top-right: mean   $|\langle\sigma^z_i\rangle|$. Bottom-left: mean $|\langle\sigma^x_i\rangle|=0$   (zero by parity). Bottom-right: nearest-neighbour $x$-correlator.}
+  \label{fig:obs}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.72\linewidth]{validate_errors.png}
+  \caption{TEBD vs.\ exact diagonalization, per-step max error. Final fidelity loss
+  $4.3\times10^{-11}$.}
+  \label{fig:validate}
+\end{figure}
 
 \end{document}
