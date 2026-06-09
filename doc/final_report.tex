@@ -59,6 +59,13 @@ A chain of $L$ spin-$\tfrac{1}{2}$ sites lives in a Hilbert space of dimension $
 
 Across GPUs we use task parallelism: each MPI rank owns one GPU and runs independent TEBD evolutions for different $(J,g)$ points -- a natural fit for the parameter sweep.
 
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.85\linewidth]{summary.png}
+  \caption{Reference $L=20$ TFIM quench ($J=g=1$, order 4, $\chi_{\max}=64$). Entanglement growth drives bond-dimension growth, which sets the SVD sizes that dominate runtime.}
+  \label{fig:summary}
+\end{figure}
+
 %% -------------------------------------------------------------------------
 \section{Algorithms and state of the art}
 
@@ -146,6 +153,13 @@ $\chi_{\max}$ & CPU (s) & M3 GPU (s) & Persistent (s) & Streamed (s) & CPU/Persi
 \textbf{Model vs.\ measurement.} The crossover study (Fig.~\ref{fig:crossover}) confirms prediction (a): at TFIM-realized $\chi_a\approx41$ the GPU is latency-bound (flat across $\chi_{\max}=64$--128 in Table~\ref{tab:gpu}), crossing the CPU near $\chi\approx96$
 and reaching $\sim5\times$ at $\chi=128$. Nsight confirms model (c): no MPI call appears in the timeline.
 
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.88\linewidth]{bench_M3.png}
+  \caption{(a) Wall time vs.\ $L$ at $\chi_{\max}=64$: linear, $\sim1.3$ ms/bond, latency-bound as predicted. (b) Per-call \code{update\_bond} vs.\ $\chi$: CPU/GPU crossover near $\chi\approx96$--128.}
+  \label{fig:crossover}
+\end{figure}
+
 %% -------------------------------------------------------------------------
 \section{Bottleneck analysis}\label{sec:bottleneck}
 
@@ -232,14 +246,7 @@ weak   & 4 &  4 & 103.5 & n/a  &  17\% \\
   \label{fig:scaling}
 \end{figure}
 
-\textbf{Phase-diagram structure.} Figure~\ref{fig:phase} shows the end-of-evolution mid-chain entropy and realized $\chi_a$ across the $4\times4$ grid: entropy peaks near the critical point ($J\approx g$) and saturates $\chi_{\max}=64$ at most high-$J$ points, while the paramagnetic corner reaches only $\chi_a\approx21$--45. This 2--6$\times$ spread in $\chi_a$ sets the per-pair SVD cost and explains the load-imbalance gap.
-
-\begin{figure}[ht]
-  \centering
-  \includegraphics[width=0.9\linewidth]{phase_heatmap.png}
-  \caption{Left: final mid-chain entropy $S_\text{mid}$. Right: max realized bond dimension $\chi_a$. High-$J$ points saturate $\chi_{\max}=64$ and dominate runtime; the paramagnetic corner (small $J$, large $g$) is cheap.}
-  \label{fig:phase}
-\end{figure}
+\textbf{Phase-diagram structure.} Physically, this imbalance reflects the entanglement landscape: entropy peaks near the critical point ($J\approx g$), and the realized $\chi_a$ spans $2$--$6\times$ across the grid -- from $\chi_a\approx21$ in the paramagnetic corner to a saturated 64 at high $J$ -- which sets the per-pair SVD cost (Fig.~\ref{fig:phase}, Appendix).
 
 % \textbf{Observables over the phase diagram.} The sweep also collects GPU-computed $\langle\sigma^z_i\rangle$, $\langle\sigma^x_i\rangle$, and $\langle\sigma^x_i\sigma^x_j\rangle$ for every pair (Fig.~\ref{fig:obs}). $\langle\sigma^x_i\rangle$ is zero by parity ($H$ commutes with $\Pi=\bigotimes\sigma^z_i$, under which $\sigma^x_i\to-\sigma^x_i$), and the ferromagnetic corner (large $J$, small $g$) shows the largest NN correlations and smallest $|\langle\sigma^z_i\rangle|$, as expected.
 
@@ -337,16 +344,9 @@ our CUDA kernels (gate contract, layout, Vidal restore) & $<0.4\%$ & combined \\
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=0.88\linewidth]{summary.png}
-  \caption{Reference $L=20$ TFIM quench ($J=g=1$, order 4, $\chi_{\max}=64$).  Entanglement growth drives bond-dimension growth, which sets the SVD sizes that dominate runtime.}
-  \label{fig:summary}
-\end{figure}
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.88\linewidth]{bench_M3.png}
-  \caption{(a) Wall time vs.\ $L$ at $\chi_{\max}=64$: linear, $\sim1.3$ ms/bond, latency-bound as predicted. (b) Per-call \code{update\_bond} vs.\ $\chi$: CPU/GPU crossover near $\chi\approx96$--128.}
-  \label{fig:crossover}
+  \includegraphics[width=0.9\linewidth]{phase_heatmap.png}
+  \caption{Left: final mid-chain entropy $S_\text{mid}$. Right: max realized bond dimension $\chi_a$. High-$J$ points saturate $\chi_{\max}=64$ and dominate runtime; the paramagnetic corner (small $J$, large $g$) is cheap.}
+  \label{fig:phase}
 \end{figure}
 
 \begin{figure}[h]
